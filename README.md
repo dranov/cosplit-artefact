@@ -19,7 +19,26 @@ The *login details* are user 'pldi21' with password 'pldi21' (without quotes).
 ## Step-by-Step Instructions (Full Review)
 
 
-## Troubleshooting
+## Appendix
+
+### Reference commands
+
+Output the result of the sharding analysis for a given contract:
+
+```
+./bin/scilla-checker -gaslimit 10000 -libdir ./src/stdlib/ -sa  ~/cosplit-artefact/contracts/FungibleToken~zil1ygxmqm8rvgvvmy9a6jn04mtq3qssy9qws92lqr.scilla
+```
+
+Output the good enough information for a given contract:
+
+```
+./bin/scilla-checker -gaslimit 10000 -libdir ./src/stdlib/ -sa -sa-ge  ~/cosplit-artefact/contracts/FungibleToken~zil1ygxmqm8rvgvvmy9a6jn04mtq3qssy9qws92lqr.scilla 2>/dev/null | grep GoodEnough
+```
+
+
+### Troubleshooting
+
+- **My keyboard layout is not reflected in the VM.** The art
 
 - **The Virtual Box display window becomes black.** This sometimes happens on
   high-resolution monitors. When it happens, resize the Virtual Box window (by
