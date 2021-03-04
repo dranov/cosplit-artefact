@@ -4,7 +4,7 @@ CONTRACTS_PATH=/home/pldi21/cosplit-artefact/contracts
 NUM_RUNS=100
 
 # CSV header
-echo "Name,LOC,Parse min,Parse avg,Parse max,Typecheck min,Typecheck avg,Typecheck max,Analysis min,Analysis avg,Analysis max,Total avg w/o analysis,Total avg w/ analysis,Avg overhead added by analysis,Avg overhead percent"
+echo "Name,LOC,Parse_min,Parse_avg,Parse_max,Typecheck_min,Typecheck_avg,Typecheck_max,Analysis_min,Analysis_avg,Analysis_max,Total_avg_w/o_analysis,Total_avg_w/_analysis,Avg_overhead_added_by_analysis,Avg_overhead_percent"
 
 for file in $CONTRACTS_PATH/*
 do
