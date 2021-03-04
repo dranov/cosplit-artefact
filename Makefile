@@ -10,7 +10,7 @@ benchmarks:
 
 	cd ./benchmarks; \
 	./timing.sh | tee ./_timing.csv; \
-	sort -k4,4 -n -t, ./_timing.csv < ./timing.csv; \
+	csvsort -c4 -r _timing.csv > timing.csv; \
 	pdflatex timing.tex; \
 	mv timing.pdf ../fig/
 

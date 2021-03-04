@@ -23,6 +23,9 @@ Once you start the VM:
 
 1. Open a terminal and change directory to `~/cosplit-artefact`
 
+2. Run `make`. This should take roughly 4 minutes and will produce figures in
+   the `~/cosplit-artefact/fig/` folder.
+
 ## Step-by-Step Instructions (Full Review)
 
 
