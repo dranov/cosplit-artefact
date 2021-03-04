@@ -3,7 +3,7 @@ all: default
 default: benchmarks
         
 benchmarks:
-	mkdir fig; \
+	mkdir -p fig; \
 	cd ./benchmarks; \
 	./goodenough.sh > ./goodenough.csv; \
 	Rscript goodenough_plots.r
