@@ -17,7 +17,7 @@ Windows and use HyperV (e.g. WSL2 or Docker), we recommend the latest version.
 
 The login details are user 'pldi21' with password 'pldi21' (without quotes).
 
-TODO: add instructions of how to import the VM
+**TODO: add instructions of how to import the VM**
 
 Once you start the VM:
 
@@ -30,9 +30,25 @@ Once you start the VM:
    the `~/cosplit-artefact/fig/` folder:
    
    - `trans.pdf` corresponding to the inline figure in section 5.1.2 (line 1034)
-   - `timing.pdf` corresponding to Figure 12
+   - `timing.pdf` corresponding to Figure 12 (line 1050)
    - `maxgesize.pdf` and `maxgenumber.pdf` corresponding to, respectively, the
-     left and right parts of Figure 13
+     left and right parts of Figure 13 (line 1101)
+
+4. Check that these figures match the ones in the paper. `timing.pdf` may
+   look slightly different, as it measures performance.
+
+5. Open a terminal navigate to `~/cosplit-artefact/eth-usage-analysis`. In the
+   terminal, run `jupyter notebook`. This should open an instance of Jupyter
+   Notebook in Firefox. Click on the `Ethereum smart contract usage.ipynb`
+   entry. On the left-hand side of the page, the inputs are numbered:
+
+   - `In[20]` corresponds to the left part of Figure 1 (line 170)
+  
+   - The right part of Figure 1 (line 170) is obtained from the data in `In[25]`
+     (exported to `eth-erc20-split.csv`) by considering only `erc20_transfer`
+     and `non_erc20_single_call` (and normalising such that their sum is 100%).
+
+6. Check that these figures match the ones in the paper.
 
 ## Step-by-Step Instructions (Full Review)
 
