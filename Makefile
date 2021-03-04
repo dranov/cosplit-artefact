@@ -5,11 +5,12 @@ default: benchmarks
 benchmarks:
 	mkdir -p fig; \
 	cd ./benchmarks; \
-	./goodenough.sh > ./goodenough.csv; \
+	./goodenough.sh | tee ./goodenough.csv; \
 	Rscript goodenough_plots.r
 
 	cd ./benchmarks; \
-	./timing.sh > ./timing.csv; \
+	./timing.sh | tee ./_timing.csv; \
+	sort -k4,4 -n -t, ./_timing.csv < ./timing.csv; \
 	pdflatex timing.tex; \
 	mv timing.pdf ../fig/
 

@@ -17,6 +17,12 @@ Windows and use HyperV (e.g. WSL2 or Docker), we recommend the latest version.
 
 The login details are user 'pldi21' with password 'pldi21' (without quotes).
 
+TODO: add instructions of how to import the VM
+
+Once you start the VM:
+
+1. Open a terminal and change directory to `~/cosplit-artefact`
+
 ## Step-by-Step Instructions (Full Review)
 
 
