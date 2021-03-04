@@ -23,8 +23,16 @@ Once you start the VM:
 
 1. Open a terminal and change directory to `~/cosplit-artefact`
 
-2. Run `make`. This should take roughly 4 minutes and will produce figures in
-   the `~/cosplit-artefact/fig/` folder.
+2. Inspect the `~/cosplit-artefact/fig/` folder to see the plots that were
+   generated on the authors' machine. Run `make clean` to delete them.
+
+3. Run `make`. This should take roughly 3.5 minutes and will produce figures in
+   the `~/cosplit-artefact/fig/` folder:
+   
+   - `trans.pdf` corresponding to the inline figure in section 5.1.2 (line 1034)
+   - `timing.pdf` corresponding to Figure 12
+   - `maxgesize.pdf` and `maxgenumber.pdf` corresponding to, respectively, the
+     left and right parts of Figure 13
 
 ## Step-by-Step Instructions (Full Review)
 
