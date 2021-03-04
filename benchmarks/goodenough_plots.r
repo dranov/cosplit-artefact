@@ -1,4 +1,4 @@
-stats <- read.csv("./contracts.csv", stringsAsFactors = F)
+stats <- read.csv("./goodenough.csv", stringsAsFactors = F)
 
 # Removing buggy entries
 stats <- stats[!is.na(suppressWarnings(as.numeric(stats$Trans))),]
