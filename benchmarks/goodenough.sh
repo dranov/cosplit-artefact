@@ -2,6 +2,9 @@
 SCILLA_PATH=/home/pldi21/scilla
 CONTRACTS_PATH=/home/pldi21/cosplit-artefact/contracts
 
+# CSV header
+echo "Name,Line count,Trans,MaxGESize,ShardingRatio,MaxGENum,SEP,GE-1,GE-2,GE-3,GE-4,GE-5,GE-6,GE-7,GE-8,GE-9,GE-10,GE-11,GE-12,GE-13,GE-14,GE-15,GE-16,GE-17,GE-18,GE-19,SEP,Maximal selections"
+
 for file in $CONTRACTS_PATH/*
 do
 line_count=$(wc -l "$file" | cut -d ' ' -f 1)
