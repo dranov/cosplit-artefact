@@ -1,7 +1,10 @@
 #!/bin/bash
 SCILLA_PATH=/home/pldi21/scilla
 CONTRACTS_PATH=/home/pldi21/cosplit-artefact/contracts
-NUM_RUNS=1000
+NUM_RUNS=100
+
+# CSV header
+echo "Name,LOC,Parse min,Parse avg,Parse max,Typecheck min,Typecheck avg,Typecheck max,Analysis min,Analysis avg,Analysis max,Total avg w/o analysis,Total avg w/ analysis,Avg overhead added by analysis,Avg overhead percent"
 
 for file in $CONTRACTS_PATH/*
 do
@@ -10,12 +13,12 @@ do
 	TMP_FILE="./_$name.csv"
 	rm -f $TMP_FILE
 	
-	analysis=$($SCILLA_PATH/bin/scilla-checker -gaslimit 10000 -libdir $SCILLA_PATH/src/stdlib/ "$file" -sa -sa-timings 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//'))
+	analysis=$($SCILLA_PATH/bin/scilla-checker -gaslimit 10000 -libdir $SCILLA_PATH/src/stdlib/ "$file" -sa -sa-timings 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//')
 	if [[ $? -eq 0 ]]
 	then
 	for run in $(seq $NUM_RUNS)
 	do
-	analysis=$($SCILLA_PATH/bin/scilla-checker -gaslimit 10000 -libdir $SCILLA_PATH/src/stdlib/ "$file" -sa -sa-timings 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//'))
+	analysis=$($SCILLA_PATH/bin/scilla-checker -gaslimit 10000 -libdir $SCILLA_PATH/src/stdlib/ "$file" -sa -sa-timings 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//')
 	echo "$analysis" >> $TMP_FILE 
 	done
 	

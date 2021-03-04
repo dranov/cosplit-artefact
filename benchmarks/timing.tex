@@ -1,0 +1,43 @@
+\documentclass{standalone}
+\usepackage{pgfplots}
+\usepackage{tikz}
+\usetikzlibrary{patterns}
+
+\pgfplotsset{compat=1.16}
+\makeatletter
+\pgfplotsset{
+    /pgfplots/flexible yticklabels from table/.code n args={3}{%
+        \pgfplotstableread[#3]{#1}\coordinate@table
+        \pgfplotstablegetcolumn{#2}\of{\coordinate@table}\to\pgfplots@yticklabels
+        \let\pgfplots@yticklabel=\pgfplots@user@ticklabel@list@y
+    }
+}
+\makeatother
+
+
+\begin{document}
+
+\begin{tikzpicture}
+    \begin{axis}[
+    width=\textwidth,
+    xmajorgrids,
+    ytick pos=left,
+    xbar stacked,   % Stacked horizontal bars
+    y=4pt,
+    enlarge y limits={abs=5pt}, % The distance between the center of the first bar and the left edge
+    /pgf/bar width=2pt,% bar width
+    xmin=0,         % Start x axis at 0
+    % xlabel={Average time (microseconds)},
+    ytick=data,     % Use as many tick labels as y coordinates
+    yticklabel style = {font=\fontsize{4}{3.5}\selectfont},
+    flexible yticklabels from table={./timing.csv}{Name}{col sep=comma}
+    ]
+    \addplot [fill=green!80,postaction={pattern=north east lines}] table [x=Parse_avg,meta=Name,y expr=\coordindex,col sep=comma] {./timing.csv};   % "First" column against the data index
+    \addplot [fill=blue!60,postaction={pattern=crosshatch} ] table [x=Typecheck_avg,meta=Name,y expr=\coordindex,col sep=comma] {./timing.csv};
+    \addplot [fill=red!60,postaction={pattern=vertical lines}] table [x=Analysis_avg,meta=Name,y expr=\coordindex,col sep=comma] {./timing.csv};
+    \legend{Parsing,Typechecking,Sharding analysis}
+    \end{axis}
+\end{tikzpicture}
+
+
+\end{document}

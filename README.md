@@ -45,12 +45,15 @@ To get the timing split between parsing/typechecking/sharding analysis:
 
 ### Troubleshooting
 
-- **My keyboard layout is not reflected in the VM.** The art
-
 - **The Virtual Box display window becomes black.** This sometimes happens on
   high-resolution monitors. When it happens, resize the Virtual Box window (by
   dragging from the corner) to make it smaller. The VM display should become
   functional again.
+
+- **The VM freezes.** Make sure you are using the latest version of Virtual Box,
+  especially if you are running Windows and have HyperV enabled (e.g., you use
+  WSL2 or Docker). Earlier versions of Virtual Box only had experimental support
+  for HyperV -- the VM would run, but would be unstable.
 
 - **Copy/paste does not work between my machine and the VM.** In the Virtual Box
   window, select Devices -> Shared clipboard -> Bidirectional.
