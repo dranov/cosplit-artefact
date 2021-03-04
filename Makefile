@@ -16,5 +16,9 @@ benchmarks:
 clean:
 	rm -rf fig/
 	rm -rf benchmarks/*.csv
+	rm -rf benchmarks/*.log
+	rm -rf benchmarks/*.aux
+	rm -rf benchmarks/*.pdf
+
 
 .PHONY: benchmarks clean
