@@ -1,0 +1,169 @@
+scilla_version 0
+
+import ListUtils
+
+library RoadDamage
+
+let accepted_code = Int32 1
+let not_owner_code  = Int32 2
+let no_permission_code = Int32 3
+let no_validators_code = Int32 4
+let no_user_code = Int32 5
+
+let full_validators = Uint32 21
+let forteen_validators = Uint32 14
+let seven_validators = Uint32 7
+let validate_true = Uint32 1
+let reputation_one = Uint32 1
+
+
+let f =
+  fun (a : ByStr20) =>
+  fun (b : ByStr20) =>
+    builtin eq a b
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+contract RoadDamage
+(owner: ByStr20)
+
+(* address => reputation *)
+field users : Map ByStr20 Uint32 = Emp ByStr20 Uint32
+
+(* picture hash => uploader_address *)
+field pictures : Map String ByStr20 = Emp String ByStr20
+
+(* picture hash => pre-define validators *)
+field pic_validator : Map String (List ByStr20) = Emp String (List ByStr20)
+
+(* picture hash => (result map) *)
+field evaluate_results : Map String (Map ByStr20 Uint32) = Emp String (Map ByStr20 Uint32)
+
+transition Punish (user: ByStr20)
+  u <- users;
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    reputation = builtin get u user;
+    match reputation with
+    | Some r =>
+      new_r = builtin sub r reputation_one;
+      new_u = builtin put u user new_r;
+      users := new_u;
+      e = { _eventname : "PunishSuccess"; caller : _sender; amount : Uint128 0; code : accepted_code };
+      event e
+    | None =>
+      e = {_eventname : "PunishFailure"; caller : _sender;
+          amount : Uint128 0; code : no_user_code};
+      event e 
+    end
+  | False => 
+    e = {_eventname : "PunishFailure"; caller : _sender;
+         amount : Uint128 0; code : not_owner_code};
+    event e
+  end
+end
+
+transition Reward (user: ByStr20)
+  u <- users;
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    reputation = builtin get u user;
+    match reputation with
+    | Some r =>
+      new_r = builtin add r reputation_one;
+      new_u = builtin put u user new_r;
+      users := new_u;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 1; 
+              code : accepted_code};
+      msgs = one_msg msg;
+      e = { _eventname : "RewardSuccess"; caller : _sender; amount : Uint128 0; code : accepted_code };
+      event e;
+      send msgs  
+    | None =>
+      e = {_eventname : "RewardFailure"; caller : _sender;
+          amount : Uint128 0; code : no_user_code};
+      event e  
+    end
+  | False =>
+    e = {_eventname : "RewardFailure"; caller : _sender;
+         amount : Uint128 0; code : not_owner_code};
+    event e
+  end 
+end  
+  
+
+transition DoValidate (hash: String, result: Uint32)
+  pic_vas <- pic_validator;
+  validators = builtin get pic_vas hash;
+  er <- evaluate_results;
+  match validators with
+  | Some v =>
+    list_bystr20 = @list_mem ByStr20;
+    can_validate = list_bystr20 f _sender v;
+    match can_validate with
+    | True =>
+         result_map = builtin get er hash;
+         match result_map with
+         | None =>
+            empty_result = Emp ByStr20 Uint32;
+            add_result = builtin put empty_result _sender result;
+            add_er = builtin put er hash add_result;
+            evaluate_results := add_er
+         | Some rm => 
+            add_result = builtin put rm _sender result;
+            add_er = builtin put er hash add_result;
+            evaluate_results := add_er
+         end     
+    | False =>  
+      e = {_eventname : "DoValidateFailure"; caller : _sender;
+          amount : Uint128 0; code : no_permission_code
+      };
+      event e
+    end    
+  | None =>
+    e = {_eventname : "DoValidateFailure"; caller : _sender;
+        amount : Uint128 0; code :no_validators_code
+    };
+    event e
+  end      
+end
+
+transition UploadPicture (hash: String)
+  ups <- users;
+  can_upload = builtin contains ups _sender;
+  match can_upload with
+  | True => 
+    pics <- pictures;
+    add_pics = builtin put pics hash _sender;
+    pictures := add_pics;
+    e = {_eventname : "UploadPictureSuccess"; caller : _sender;
+        amount : Uint128 0; code : accepted_code};
+    event e
+  | False =>
+    e = {_eventname : "UploadPictureFailure"; caller : _sender;
+        amount : Uint128 0; code : no_permission_code};
+    event e
+  end
+end
+
+transition AddUser (addr: ByStr20, reputation: Uint32)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True => 
+    ups <- users;
+    add_ups = builtin put ups addr reputation;
+    users := add_ups;
+    e = {_eventname : "AddUserSuccess"; caller : _sender;
+        amount : Uint128 0; code : accepted_code};
+    event e
+  | False =>
+    e = {_eventname : "AddUserFailure"; caller : _sender;
+         amount : Uint128 0; code : not_owner_code};
+    event e
+  end
+end

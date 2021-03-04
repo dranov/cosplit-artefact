@@ -1,0 +1,60 @@
+
+scilla_version 0
+
+import BoolUtils
+
+library GoFundMi
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+contract GoFundMi
+(
+    owner: ByStr20,
+    goal : Uint128
+)
+
+field total_raised : Uint128 = Uint128 0
+
+transition Withdraw (address : ByStr20)
+    is_owner = builtin eq owner _sender;
+    bal <- _balance;
+    match is_owner with
+    | True  =>
+        msg = { _tag : ""; _recipient : address; _amount : bal };
+        msgs = one_msg msg;
+        send msgs;
+        e = { _eventname : "Withdraw() success"; amount : bal };
+        event e
+    | False =>
+        e = { _eventname : "Withdraw() failed" };
+        event e
+    end
+end
+
+transition Donate ()
+    raised <- total_raised;
+    
+    is_owner = builtin eq owner _sender;
+    is_not_owner = negb is_owner;
+    
+    final_total = builtin add _amount raised;
+    
+    donation_exceeds_goal = builtin lt goal final_total;
+    donation_does_not_exceeds_goal = negb donation_exceeds_goal;
+    
+    can_donate = andb is_not_owner donation_does_not_exceeds_goal;
+    
+    match can_donate with
+    | True  =>
+        total_raised := final_total;
+        accept;
+        e = { _eventname : "Donate() success"; amount : _amount };
+        event e
+    | False =>
+        e = { _eventname : "Donate() failed" };
+        event e
+    end
+end

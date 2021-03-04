@@ -1,0 +1,109 @@
+scilla_version 0
+
+(* This contract implements a fungible token interface a la ERC20.*)
+
+import PairUtils ListUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library LikeMaster
+
+let zero = Uint128 0
+
+let success_code = Int32 0
+let not_owner_code = Int32 1
+let no_tmp_data_code = Int32 2
+let invalid_tmp_data_code = Int32 2
+let zero_address = builtin ripemd160hash zero
+
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* _sender like_amount  *)
+type TmpData =
+| LikeTmpData of ByStr20 Uint128
+| Tmp of Uint128
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract LikeMaster
+(owner : ByStr20)
+
+field vote_logic_address: ByStr20 = zero_address
+field distribute_token_address: ByStr20 = zero_address
+field tmp_data: Map ByStr20 TmpData = Emp ByStr20 TmpData
+
+transition SendLikeFromVoter (like_amount: Uint128)
+  bnum <- & BLOCKNUMBER;
+  tmp_tx_id =
+    let t1 = builtin ripemd160hash like_amount in
+    let t2 = builtin ripemd160hash _sender in
+    let t3 = builtin ripemd160hash bnum in
+    let sum1 = builtin concat t1 t2 in
+    let sum2 = builtin concat sum1 t3 in
+    builtin ripemd160hash sum2;
+  tmp = LikeTmpData _sender like_amount;
+  tmp_data[tmp_tx_id] := tmp;
+
+  addr <- vote_logic_address;
+  e = {_eventname: "SendLikeFromVoterSuccess"; like_amount: like_amount; vote_logic_address: addr; tmp_tx_id: tmp_tx_id };
+  event e;
+  msg = { _tag: "CalcVoteScore"; _recipient: addr; _amount : zero; like_amount: like_amount; tmp_tx_id: tmp_tx_id };
+  message = one_msg msg;
+  send message
+end
+
+transition SaveVoteData (vote_score: Uint128, tmp_tx_id: ByStr20)
+  get_tmp <- tmp_data[tmp_tx_id];
+  match get_tmp with
+  | Some tmp =>
+    match tmp with
+    | LikeTmpData voter_address like_amount =>
+      addr <- distribute_token_address;
+      delete tmp_data[tmp_tx_id];
+      e = {_eventname: "SaveVoteDataSuccess"; tmp_tx_id: tmp_tx_id; vote_score: vote_score; voter_address: voter_address; like_amount: like_amount; distribute_token_address: addr };
+      event e;
+      msg = { _tag: "ReceiveVoteScore"; _recipient: addr; _amount : zero; voter_address: voter_address; vote_score: vote_score; like_amount: like_amount; vote_id: tmp_tx_id };
+      message = one_msg msg;
+      send message
+    | _ =>
+      e = {_eventname: "SaveVoteDataFailed"; tmp_tx_id: tmp_tx_id; code: invalid_tmp_data_code  };
+      event e
+    end
+  | None =>
+    e = {_eventname: "SaveVoteDataFailed"; tmp_tx_id: tmp_tx_id; code: no_tmp_data_code };
+    event e
+  end
+end
+
+transition ChangeTokenAddress (address: ByStr20)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    distribute_token_address := address;
+    e = {_eventname : "ChangeTokenAddressSuccess"; caller : _sender; distribute_token_address: address };
+    event e
+  | False =>
+    e = {_eventname : "ChangeTokenAddressFAilure"; caller : _sender; code : not_owner_code};
+    event e
+  end
+end
+
+transition ChangeVoteLogicAddress (address: ByStr20)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | True =>
+    vote_logic_address := address;
+    e = {_eventname : "ChangeVoteLogicAddressSuccess"; caller : _sender; vote_logic_address: address };
+    event e
+  | False =>
+    e = {_eventname : "ChangeVoteLogicAddressFAilure"; caller : _sender; code : not_owner_code};
+    event e
+  end
+end

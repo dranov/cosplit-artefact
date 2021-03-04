@@ -1,0 +1,165 @@
+scilla_version 0
+library IOULib
+let nilString = Nil {String}
+let true = True
+let zero = Uint128 0
+contract IOU
+(superAdmin: ByStr20,project: String,wallet: ByStr20,tokenName: String)
+field exchangeRatio : Uint128 = Uint128 100
+field target : Uint128 = Uint128 0
+field balance : Uint128 = Uint128 0
+field fulfill: Bool = False
+field pause: Bool = False
+field admins: Map ByStr20 Bool =
+  let empty = Emp ByStr20 Bool in
+    builtin put empty superAdmin true
+transition setTarget(target: Uint128)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+     | Some approval => approval
+     | None => False
+     end;
+   match isSenderAdmin with
+     | True =>
+       target := target;
+       e = {_eventname : "setTargetSuccess"; target : target};
+       event e
+     | False =>
+       e = {_eventname : "setTargetFailure"; target : target};
+       event e
+     end
+end
+
+transition setAdmin(address: ByStr20, isApproved: Bool)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+    | Some approval => approval
+    | None => False
+    end;
+  match isSenderAdmin with
+  | True =>
+    admins[address] := isApproved;
+    e = {_eventname : "setAdminSuccess"; address : address; isApproved : isApproved};
+    event e
+  | False =>
+    e = {_eventname : "setAdminFailure"; address : address; isApproved : isApproved};
+    event e
+  end
+end
+
+transition setIOUContractSettings(admin: ByStr20, isApproved: Bool,target: Uint128, exchangeRatio: Uint128)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+    | Some approval => approval
+    | None => False
+    end;
+  match isSenderAdmin with
+  | True =>
+    admins[admin] := isApproved;
+    target := target;
+    exchangeRatio := exchangeRatio;
+    e = {_eventname : "setIOUContractSettingsSuccess"; target : target; exchangeRatio : exchangeRatio; admin : admin};
+    event e
+  | False =>
+    e = {_eventname : "setIOUContractSettingsFailure"; target : target; exchangeRatio : exchangeRatio; admin : admin};
+    event e
+  end
+end
+
+transition logDonation(donorID: ByStr32, fundingAmount: Uint128)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+    | Some approval => approval
+    | None => False
+    end;
+  currentBalance <- balance;
+  match isSenderAdmin with
+  | True =>
+    t <- target;
+    er <- exchangeRatio;
+    targetBalance = builtin mul er t;
+    nNewTokens = builtin mul er fundingAmount;
+    isPause <- pause;
+    match isPause with
+    | True =>
+      e = {_eventname : "logDonationFailure"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : Uint128 0; balance:currentBalance};
+      event e
+    | False =>
+      newBalance = builtin add currentBalance nNewTokens;
+      balance := newBalance;
+      exceed = builtin lt targetBalance newBalance;
+      match exceed with
+      | True =>
+        tt = True;
+        pause := tt;
+        e = {_eventname : "Completion_noticeSuccess"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : nNewTokens; balance : newBalance};
+        event e
+      | False =>
+        e = {_eventname : "logDonationSuccess"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : nNewTokens; balance : newBalance };
+        event e
+      end
+     end
+  | False =>
+    e = {_eventname : "logDonationFailure"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : Uint128 0; balance:currentBalance };
+    event e
+  end
+end
+
+transition logRefund(donorID: ByStr32, fundingAmount: Uint128)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+    | Some approval => approval
+    | None => False
+    end;
+  currentBalance <- balance;
+  match isSenderAdmin with
+  | True =>
+    er <- exchangeRatio;
+    nNewTokens = builtin mul er fundingAmount;
+    exceed = builtin lt currentBalance nNewTokens;
+    match exceed with
+    | True =>
+      e = {_eventname : "logRefundFailure"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : Uint128 0; balance : currentBalance};
+      event e
+    | False =>
+      newBalance = builtin sub currentBalance nNewTokens;
+      balance := newBalance;
+      isZero = builtin eq newBalance zero;
+      match isZero with
+      | True =>
+        tt <- target;
+        e = {_eventname : "completion_noticeSuccess"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : nNewTokens; balance : newBalance};
+        event e
+      | False =>
+        e = {_eventname : "logRefundSuccess"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : nNewTokens; balance : newBalance };
+        event e
+      end
+    end
+  | False =>
+    e = {_eventname : "logRefundFailure"; donorID : donorID; fundingAmount : fundingAmount; nbNewTokens : Uint128 0; balance : currentBalance };
+    event e
+  end
+end
+
+transition setPause(isPause: Bool)
+  maybeAdmin <- admins[_sender];
+  isSenderAdmin =
+    match maybeAdmin with
+    | Some approval => approval
+    | None => False
+    end;
+  match isSenderAdmin with
+  | True =>
+    pause := isPause;
+    e = {_eventname : "setPauseSuccess"; pause:isPause};
+    event e
+  | False =>
+    e = {_eventname : "setPauseFailure"};
+    event e
+  end
+end

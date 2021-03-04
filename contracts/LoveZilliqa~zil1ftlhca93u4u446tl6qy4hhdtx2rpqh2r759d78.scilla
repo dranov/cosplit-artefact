@@ -1,0 +1,88 @@
+scilla_version 0
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library LoveZilliqa
+let one = Uint256 1
+let tt = True
+contract LoveZilliqa
+(authorName : String, twitterID : String)
+(*_____________________________________________________________________________*)
+(*                                                                             *)
+(*                                 SCALABLE                                    *)
+(*                                                                             *)
+(*                                    /\                                       *)
+(*                     .+//+.        /  \                                      *)
+(*                 +::BINANCE:::+   /    \                                     *)
+(*              +::COINHAKO::HUOBI::+     \                                    *)
+(*              |\\`.+:KUCOIN::BITFINEX:+  \                                   *)
+(*              |\XFERS\.+:XANPOOL::TRANSAK:+                                  *)
+(*              |\\AQILLIZ\\.+:TOKOCRYPTO::OKEX:+                              *)
+(*              |\\HG EXCHANGE\\.+::BITHUMB::UPBIT::+                          *)
+(*              |:.\\CHAINSECURITY\\\+CRYPTO.COM::EQUAL:+                      *)
+(*                 +/:+\\\\\ASTERIA\\\\`.+:LEDGER::INFINITO:+                  *)
+(*                     +/:+\\\\ELLIPTIC\\\\\`.+::HUMMINGBOT+|                  *)
+(*                         +/:+\\FLIPSIDECRYPTO\\`+.MOONPAY:|                  *)
+(*                        /    +/:+\\\\LONGHASH\\\|.UPHOLD.:|                  *)
+(*                       /         +/:+\INCOGNITO\|SWITCHEO:|                  *)
+(*                      /           +/:.\\\TRIBE\\|VIEWBASE:|                  *)
+(*                     /         +/:.\\OPENNODES\\|.ZHIP'''                    *)
+(*                    /     +/:.`SINGAPORE BLOCK-\        .:|                  *)
+(*                   /   +/:.`\CHAIN ASSOCIATION\`|CHAINLINK|                  *)
+(*                  /+/:.`\ASHLAR\\\\ACCESS\.+/+  |..ATOMIC.|                  *)
+(*               +/:.`UNSTOPPABLE DOMAINS.+/+     |..TRUST..|                  *)
+(*              |`\\EMONT ALLIANCE\\`+:/+         |..ZILPAY.|                  *)
+(*              |`\\\KRYPTON\\\\`+:/+             |..ZILLET.|                  *)
+(*              |`\\ZILHIVE\\.+:/+                |.MOONLET.|\                 *)
+(*             /|`\BRIGHTREE\`+:/+                |..ZILON..| \                *)
+(*            / |.\\\MINTABLE\\\``+:/+            |..BUTTON.|  \               *)
+(*           /  |//+.`\\SOUNDARIO\\\``+:/+        |..MATH...|   \              *)
+(*          /       +//:.`HYDRAX\\\COMMX``+:/+    |..ZENGO..|    \             *)
+(*         /             +//:.`\\DAPP POCKET\\`+:/|..ZILCLI_|     \            *)
+(*        /                 +//:.`\HYBRIDVERSE\\`.CRYPTOAPIS|      \           *)
+(*       /                      +//:.`\REVIEW DAPP\.MULTISIG|       \          *)
+(*      /_ _ _ _ _ _ _ _ _ _ _ _ _  +//:.``\DEPOS\\/BOBASHOP| _ _ _ _\         *)
+(*                                      +//:+`\TEEX/..XZIL+:+                  *)
+(*  SECURE                                   +/:+``/EZIL//+     DECENTRALISED  *)
+(*                                                 +/://+                      *)
+(*                               _   _                                         *)
+(*                             _(_ )(_ ) _                                     *)
+(*                        ____(_)| | | |(_)  _ _   _ _                         *)
+(*                       (_   ) || | | || |/ _  )/ _  )                        *)
+(*                        / /_| || | | || | (_) | (_| |                        *)
+(*                       (____)_)___)___)_)\__  |\__ _)                        *)
+(*                                            | |                              *)
+(*                                            (_)                              *)
+(*                    ___________________________________                      *)
+(*                                                                             *)
+(*                    The high-performance, high-security                      *)
+(*                            blockchain platform                              *)
+(*                    ___________________________________                      *)
+(*                                                                             *)
+(*                                  WS2020                                     *)
+(*_____________________________________________________________________________*)
+field author_name : String = "Will S"
+field twitter_id : String = "willl_speaks"
+field upvote_counter : Uint256 = Uint256 0
+field vote_map : Map ByStr20 Bool = Emp ByStr20 Bool
+transition upvote()
+  has_voted <- exists vote_map[_sender];
+  current_vote_count <- upvote_counter;
+  match has_voted with
+  | True =>
+    e = {_eventname : "AlreadyVoted"; current_upvote_count: current_vote_count};
+    event e
+  | False =>
+    new_vote_count = builtin add current_vote_count one;
+    vote_map[_sender] := tt;
+    upvote_counter := new_vote_count;
+    e = {_eventname : "Voted"; shoutout : "Zilliqa loves you!"; new_vote_count: new_vote_count};
+    event e
+  end
+end
+transition whoami()
+ author <- author_name;
+ twitter <- twitter_id;
+ e = {_eventname : "Whoami"; author_name : author; twitter_id : twitter};
+ event e
+end

@@ -1,0 +1,312 @@
+scilla_version 0
+
+(* This contract implements a fungible token interface a la ERC20.*)
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+library SwapContract
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+
+let min =
+    fun(x : Uint128) =>
+    fun(y : Uint128) =>
+    let less = builtin lt x y in
+    match less with
+    | True => x
+    | False => y
+    end
+
+let simple_tr_code : Uint32 = Uint32 0 (* by anyone *)
+let pay_off_code : Uint32 = Uint32 1 (* by dbond contract, to pay off the dbond *)
+let liquidation_code : Uint32 = Uint32 2 (* by liqag to deposit value from orig. bond liquidation *)
+let dbond_deposit_code : Uint32 = Uint32 3 (* by dbond contract to deposit acquired tokens *)
+let dbond_exchange_code : Uint32 = Uint32 4 (* by dbond holder *)
+
+let zero : Uint128 = Uint128 0
+let z = Uint32 0
+let zx = builtin ripemd160hash z
+
+type FiatBond =
+    | FiatBondCon of Uint32 (*maturity timestamp*)
+                     String (*ISIN*)
+type Fcdb =
+  | FcdbCon of FiatBond (*the fiat bond lying as collateral*)
+            Uint128 (*total supply*)
+            Uint32 (*maturity timestamp*)
+            Uint32 (*retire timestamp*)
+            ByStr20 (*issuer of unit of account*)
+            Uint128 (*number of unit of account tokens to pay off at maturity, 100 goes for 1 token*)
+            ByStr20 (*verification account*)
+            ByStr20 (*accounts served as counterparty*)
+            ByStr20 (*account served as liquidation agent*)
+            Uint32 (*annual percentage rate, 1000 goes for 10%*)
+            String (*escrow contract link*)
+
+
+contract SwapContract
+(owner : ByStr20)
+
+field dbonds : Map ByStr20 (Fcdb) = Emp ByStr20 Fcdb
+field received_p : Map ByStr20 (Uint128) = Emp ByStr20 Uint128
+field received_l : Map ByStr20 (Uint128) = Emp ByStr20 Uint128
+field received_d : Map ByStr20 (Uint128) = Emp ByStr20 Uint128
+field exchangable : Map ByStr20 (Uint32) = Emp ByStr20 Uint32
+
+(* made by owner in order to avoid spam *)
+(* all future manipulatons depend on if the dbond was added *)
+transition AddDBond (db_contract : ByStr20, dbond : Fcdb)
+    valid_auth = builtin eq _sender owner;
+    match valid_auth with
+    | True =>
+        ex <- exists dbonds[db_contract];
+        match ex with
+        | True =>
+            e = {_eventname : "AddDBondFailureAlreadyExists"; caller : _sender; db_contract : db_contract};
+            event e
+        | False =>
+            dbonds[db_contract] := dbond;
+            e = {_eventname : "AddDBondSuccess"; caller : _sender; db_contract : db_contract};
+            event e
+        end
+    | False =>
+        e = {_eventname : "AddDBondFailureAuth"; caller : _sender; db_contract : db_contract};
+        event e
+    end
+end
+
+
+
+(* either accepts and exchangable = True or reverts the chain *)
+(* if sent more, sends the change back to emitent *)
+procedure CheckIfPaid(caller : ByStr20, db_contract : ByStr20, amount : Uint128)
+    db_dep <- received_d[db_contract];
+    db <- dbonds[db_contract];
+    db_am =  match db_dep with
+        | Some db_dep => db_dep
+        | None => Uint128 0
+    end;
+    match db with
+    | Some db =>
+        match db with
+        | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+            left = builtin sub suppl db_am;
+            needed = builtin mul left pr_am;
+            is_paid = le_int needed amount;
+            match is_paid with
+            | True =>
+                true = Uint32 1;
+                exchangable[db_contract] := true
+                (* extra = builtin sub amount needed;
+                change = builtin lt zero extra;
+                match change with
+                | True =>
+                    msg = { _tag : "Transfer"; _recipient : caller; _amount : extra;
+                        to : db_contract; tokens : extra; code : Uint32 0};
+                    throw msg;
+                    msgs = one_msg msg;
+                    send msgs
+                | False =>
+                end *)
+            | False =>
+                e = { _exception : "NotEnoughPayment"; needed : needed; received : amount; db_dep : db_am};
+                throw e
+            end
+        end
+    | None =>
+    end
+end
+
+(* accepts payment from emitent if enough*)
+procedure AcceptPayOff(caller : ByStr20, db_contract : ByStr20, amount : Uint128)
+    db <- dbonds[db_contract];
+    ex <- exists exchangable[db_contract];
+    match ex with
+    | True =>
+        e = { _exception : "AlreadyPaid"; caller : _sender; db_contract : db_contract};
+        throw e
+    | False =>
+        match db with
+        | Some db =>
+            match db with
+            | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+                is_pr_iss = builtin eq pr_iss caller;
+                match is_pr_iss with
+                | True =>
+                    received_p[db_contract] := amount;
+                    accept;
+                    CheckIfPaid caller db_contract amount;
+                    msg = { _tag : "OnSuccPayOff"; _recipient : db_contract; _amount : zero};
+                    msgs = one_msg msg;
+                    send msgs;
+                    e = {_eventname : "AcceptPayOffSuccess"; caller : caller; db_contract : db_contract};
+                    event e
+                | False =>
+                    e = {_exception : "AcceptPayOffFailureAuth"; caller : _sender; db_contract : db_contract};
+                    throw e
+                end
+            end
+        | None =>
+            e = {_exception : "AcceptPayOffFailureUnknownSender"; caller : _sender; db_contract : db_contract};
+            throw e
+        end
+    end
+end
+
+procedure AcceptLiquidation(caller : ByStr20, db_contract : ByStr20, amount : Uint128)
+    db <- dbonds[db_contract];
+    ex <- exists exchangable[db_contract];
+    match ex with
+    | True =>
+        e = { _exception : "AlreadyPaid"; caller : _sender; db_contract : db_contract};
+        throw e
+    | False =>
+        match db with
+        | Some db =>
+            match db with
+            | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+                is_pr_iss = builtin eq pr_iss caller;
+                match is_pr_iss with
+                | True =>
+                    accept;
+                    received_l[db_contract] := amount;
+                    true = Uint32 1;
+                    exchangable[db_contract] := true;
+                    msg = { _tag : "OnSuccLiq"; _recipient : db_contract; _amount : zero};
+                    msgs = one_msg msg;
+                    send msgs;
+                    e = {_eventname : "AcceptLiqSuccess"; caller : caller; db_contract : db_contract};
+                    event e
+                | False =>
+                    e = {_exception : "AcceptLiquidationFailureAuth"; caller : caller; db_contract : db_contract};
+                    throw e
+                end
+            end
+        | None =>
+            e = {_exception : "AcceptLiquidationFailureUnknownSender"; caller : caller; db_contract : db_contract};
+            throw e
+        end
+    end
+end
+
+(* accumulates dbond tokens on the name of emitent *)
+(* accepts transfer initiated by anyone *)
+procedure AcceptDBondDep(db_contract : ByStr20, sender : ByStr20, amount : Uint128)
+    is_emitent <- exists dbonds[db_contract];
+    ex <- exists exchangable[db_contract];
+    match ex with
+    | True =>
+        e = { _exception : "AlreadyPaid"; db_contract : db_contract; sender : sender};
+        throw e
+    | False =>
+        match is_emitent with
+        | True =>
+            accept;
+            before <- received_d[db_contract];
+            match before with
+            | Some before =>
+                res = builtin add amount before;
+                received_d[db_contract] := res
+            | None =>
+                received_d[db_contract] := amount
+            end;
+            e = {_eventname : "AcceptDBondDepSuccess"; db_contract : db_contract; sender : sender};
+            event e
+        | False =>
+            e = {_exception : "AcceptDBondDepFailureUnknownSender"; db_contract : db_contract; sender : sender};
+            throw e
+        end
+    end
+end
+
+(* makes an exchange or aborts *)
+procedure ExchangeDBond(db_contract : ByStr20, sender : ByStr20, amount : Uint128)
+    (* caller here is supposed to be dbond contract *)
+    is_ex <- exists exchangable[db_contract];
+    match is_ex with
+    | True =>
+        db <- dbonds[db_contract];
+        p <- received_p[db_contract];
+        l <- received_l[db_contract];
+        d <- received_d[db_contract];
+        d_am = match d with | Some d => d
+                            | None => Uint128 0 end;
+        p_am = match p with | Some p => p
+                            | None => Uint128 0 end;
+        l_am = match l with | Some l => l
+                            | None => Uint128 0 end;
+        match db with
+        | Some db =>
+                match db with
+                | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+                    accept;
+                    total_p = builtin add l_am p_am;
+                    denom = builtin sub suppl d_am;
+                    max_cost = builtin mul denom pr_am;
+                    total = min total_p max_cost;
+                    nom = builtin mul total amount;
+                    need_to_send = builtin div nom denom;
+                    msg = { _tag : "Transfer"; _recipient : pr_iss; _amount : zero;
+                        to : sender; tokens : need_to_send; code : Uint32 0};
+                    msgs = one_msg msg;
+                    new_d_dep = builtin add d_am amount;
+                    received_d[db_contract] := new_d_dep;
+                    send msgs;
+                    e = {_eventname : "AcceptDBondDepSuccess"; db_contract : db_contract; sender : sender};
+                    event e
+                end
+        | None =>
+        end
+    | False =>
+        e = { _exception : "NotExchangable"};
+        throw e
+    end
+end
+
+(* is triggered on successful incoming transfer *)
+transition TransferSuccess (sender : ByStr20, amount : Uint128, code : Uint32)
+    pay_off = builtin eq code pay_off_code;
+    liquidation = builtin eq code liquidation_code;
+    db_dep = builtin eq code dbond_deposit_code;
+    db_ex = builtin eq code dbond_exchange_code;
+    match pay_off with
+    | True =>
+        AcceptPayOff _sender  sender  amount
+    | False =>
+        match liquidation with
+        | True =>
+            AcceptLiquidation _sender  sender  amount
+        | False =>
+            match db_dep with
+            | True =>
+                AcceptDBondDep _sender  sender  amount
+            | False =>
+                match db_ex with
+                | True =>
+                    ExchangeDBond _sender  sender  amount
+                | False =>
+                    e = { _exception : "InvalidCode"};
+                    throw e
+                end
+            end
+        end
+    end
+end

@@ -1,0 +1,566 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import BoolUtils
+library CelebrityNft
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+Cons {Message} msg nil_msg
+
+
+
+let  ratioBase = Uint128 10000
+let zeroUint128 = Uint128 0
+let toUint128 = 
+  fun(a : (Option Uint128)) => 
+    match a with
+    | Some v => 
+      v
+    | None =>
+      zeroUint128
+    end
+
+
+let checkBlkValidate =
+    fun(borigin :BNum) =>
+    fun(bcurrent :BNum) =>
+    fun(cooldown :Int256) =>
+        let bbToInt256 = builtin bsub bcurrent borigin in
+             builtin lt cooldown bbToInt256
+
+
+let calculateCut = 
+    fun(price :Uint128) =>
+    fun(ratio :Uint128) =>
+      let res = builtin mul price ratio in
+        builtin div res  ratioBase
+
+
+let calculateNextPrice =
+    fun(price :Uint128) =>
+    fun(factor :Uint128) =>
+      let addPriceByMul = builtin mul price factor  in
+          let addPrice =  builtin div addPriceByMul  ratioBase in
+            builtin add price addPrice
+
+
+(* Checks and see if an address is a contract owner *)
+let checkContractOwner =
+    fun (msgSender: ByStr20) =>
+    fun (contractOwner: ByStr20) =>
+        builtin eq msgSender contractOwner
+
+(* Checks and see if an address is a token owner *)
+let isTokenOwner =
+    fun (msgSender: ByStr20) =>
+    fun (tokenId: Uint256) =>
+    fun (tokenOwnerMap_tmp : Map (Uint256) (ByStr20)) =>
+        let tokenOwner = builtin get tokenOwnerMap_tmp tokenId in
+        match tokenOwner with
+        | None => False
+        | Some val =>
+            builtin eq val msgSender
+        end
+
+(* Checks if a given address is approved to make txn the given tokenID *)
+(* Not to be confused with isApprovedForAll                            *)
+let isApproved =
+    fun (msgSender: ByStr20) =>
+    fun (tokenID: Uint256) =>
+    fun (approvalMap_tmp: Map (Uint256) (ByStr20)) =>
+        let val = builtin get approvalMap_tmp tokenID in
+        match val with
+        | None => False
+        | Some val =>
+            builtin eq val msgSender
+        end
+
+(* Checks if an message sender is approved by a given owner. (i.e. operator) *)
+let isApprovedForAll =
+    fun (msgSender: ByStr20) =>
+    fun (tokenOwner: ByStr20) =>
+    fun (operatorMap: Map (ByStr20) (Map (ByStr20) (Bool))) =>
+        let m = builtin get operatorMap tokenOwner in
+        match m with
+        | None => False
+            (* owner did not assign anyone to the approval mapping *)
+        | Some val =>
+            (* val is of type Map (ByStr20) (Bool) *)
+            let check_list = builtin get val msgSender in
+            match check_list with
+            | None => False
+            | Some is_sender_approved =>
+                (* check if sender has access rights *)
+                match is_sender_approved with
+                | True => True
+                | False => False
+                end
+            end
+        end
+
+(* Check if a sender is an operator of the owner, approved for the given ID *)
+(* or is the owner of the token *)
+let isApprovedOrOwner =
+    fun (isOwner: Bool) =>
+    fun (isApproved: Bool) =>
+    fun (isApprovedForAll: Bool) =>
+        let isOwnerOrApproved =  orb isOwner isApproved in
+        orb isOwnerOrApproved isApprovedForAll
+
+(* Error events *)
+let makeErrorEvent =
+    fun (location: String) =>
+    fun (errorCode: Uint32) =>
+        {_eventname: "Error"; raisedAt: location; code: errorCode }
+
+(* Error codes *)
+let code_success = Uint32 0
+let code_failure = Uint32 1
+let code_not_authorized = Uint32 2
+let code_not_found = Uint32 4
+let code_bad_request = Uint32 5
+let code_token_exists = Uint32 6
+let code_unexpected_error = Uint32 9
+let code_owner_not_right = Uint32 10
+
+
+
+let feeCut = Uint128 150
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+type CelebrityCard =
+| CelebrityCard of ByStr20 String Uint128 BNum Int256 Uint128 Uint128
+
+
+
+contract CelebrityNft
+(contractOwner : ByStr20,
+ name : String,
+ symbol: String
+)
+
+(* mutable fields *)
+
+(* Mapping between tokenId to token owner *)
+field tokenOwnerMap: Map Uint256 ByStr20 = Emp Uint256 ByStr20
+(* Mapping from owner to number of owned tokens *)
+field ownedTokenCount: Map ByStr20 Uint256 = Emp ByStr20 Uint256
+
+(* Mapping between tokenId to approved address *)
+(* @dev: There can only be one approved address per token at a given time. *)
+field tokenApprovals: Map Uint256 ByStr20 = Emp Uint256 ByStr20
+
+(* Mapping from owner to operator approvals  *)
+field operatorApprovals: Map ByStr20 (Map ByStr20 Bool)
+                            = Emp ByStr20 (Map ByStr20 Bool)
+
+field balanceMap: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+field feeBalance: Uint128 = Uint128 0
+
+field cardsMap: Map Uint256 CelebrityCard = Emp Uint256 CelebrityCard
+
+
+(* immutable field *)
+
+(* @notice Count all NFTs assigned to an owner *)
+transition balanceOf(address: ByStr20)
+    optionBal <- ownedTokenCount[address];
+    balance = match optionBal with
+    | Some bal => bal
+    | None => Uint256 0
+    end;
+    e = {_eventname: "balanceOf"; bal: balance};
+    event e
+end
+
+
+(* Get the owner of a particular tokenId *)
+transition ownerOf(tokenId: Uint256)
+    someVal <- tokenOwnerMap[tokenId];
+    match someVal with
+    | Some val =>
+        e = {_eventname: "ownerOf"; id: tokenId; owner: val};
+        event e
+    | None =>
+        e = let raisedAt = "ownerOf" in makeErrorEvent raisedAt code_not_found;
+        event e
+    end
+end
+
+(* @dev:    Mint new tokens. Only `contractOwner` can mint the token*)
+(* @param:  to - address of the token recipient                     *)
+(* @param:  tokenId - token id of the new token                     *)
+(* @param:  kind - token kind of the new token                     *)
+(* Returns error message code_token_exist if token exists           *)
+(* should replace with hash validate *)
+
+transition mint(to: ByStr20, tokenId: Uint256,originOwner:ByStr20,name:String,price:Uint128,lastTransferAt:BNum,coolDown:Int256,factor:Uint128,originOwnerCut:Uint128) 
+    (* Sender must be the contract owner *)
+    isAuthorized = checkContractOwner contractOwner _sender;
+    match isAuthorized with
+    | True =>
+        currentTokenOwnerMap <- tokenOwnerMap;
+        (* Check if token exists *)
+        tokenExist <- exists tokenOwnerMap[tokenId];
+        match tokenExist with
+        | True =>
+            (* Token exists, return error code *)
+            e = let raisedAt = "mint" in makeErrorEvent raisedAt code_token_exists;
+            event e
+        | False =>
+            (* Mint token *)
+            tokenOwnerMap[tokenId] := to;
+            (* add to owner count *)
+            userCnt <- ownedTokenCount[to];
+
+            card  = CelebrityCard originOwner name price lastTransferAt coolDown factor originOwnerCut;
+            cardsMap[tokenId] := card;
+
+            match userCnt with
+            | Some val =>
+                (* Append to existing results *)
+                newVal= let one = Uint256 1 in builtin add val one;
+                ownedTokenCount[to] := newVal
+            | None =>
+                (* User does not have existing tokens *)
+                newVal = Uint256 1;
+                ownedTokenCount[to] := newVal
+            end;
+             (* Emit success event *)
+            e = {_eventname: "Birth"; by: _sender; to: to; token: tokenId; originOwner:originOwner;name:name;price:price;lastTransferAt:lastTransferAt;coolDown:coolDown;factor:factor;originOwnerCut:originOwnerCut};
+            event e;
+            et = {_eventname: "Transfer"; from: _sender; to: to; tokenId: tokenId};
+            event et
+        end
+    | False =>
+        (* Unauthorized transaction - sender is not the contract owner*)
+        e = let raisedAt = "mint" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+
+
+end
+
+transition forceBuy(tokenId:Uint256,meta:String)
+  cardOpt <- cardsMap[tokenId];
+  match cardOpt with
+  | Some card =>
+    match card with
+      | CelebrityCard originOwner name price lastTransferAt coolDown factor originOwnerCut =>
+      blk <- & BLOCKNUMBER;
+      getTokenOwner <- tokenOwnerMap[tokenId];
+      match getTokenOwner with
+      | None =>
+        et = {_eventname: "forceBuyError3"; tokenId:tokenId};
+        event et
+      | Some tokenOwner =>
+        blockvalidte = checkBlkValidate lastTransferAt blk coolDown;
+        match blockvalidte with
+        | True =>
+          amountNotSatisfied = builtin lt _amount price ;
+          match amountNotSatisfied with
+          | False =>
+            accept;
+
+            (* send to origin owner *)
+            originCut = calculateCut price originOwnerCut;
+
+            (* send to contract fee *)
+            feeCut = calculateCut price feeCut;
+            currentFeeBalance <- feeBalance;
+
+            nowFeeBalance  = builtin add feeCut currentFeeBalance;
+            feeBalance := nowFeeBalance;
+
+            (* send back to buyer *)
+            leftAmount =  builtin sub _amount price;
+
+            (* update  next price*)
+            nextPrice = calculateNextPrice price factor;
+
+
+            newCard = CelebrityCard originOwner name nextPrice blk coolDown factor originOwnerCut;
+            cardsMap[tokenId] := newCard;
+
+
+
+            (* transfer token to card orld owner*)
+            realGotPrice =  let subPrice1 = builtin sub price originCut in
+                            builtin sub subPrice1 feeCut;
+
+            msg = { _tag: "";
+                    _recipient: tokenOwner;
+                    _amount: realGotPrice };
+            msgs = one_msg msg;
+            send msgs;
+            ez = {_eventname: "TransferZil"; to: tokenOwner; amount: realGotPrice};
+            event ez;
+            (* save balance for card origin owner*)
+            originOwnerBalanceOpt <- balanceMap[originOwner];
+            originOwnerBalance = toUint128 originOwnerBalanceOpt;
+            nowOriginOwerBalance = builtin add originOwnerBalance originCut;
+            balanceMap[originOwner] := nowOriginOwerBalance;
+
+
+            (* transfer card *)
+            delete tokenApprovals[tokenId];
+            tokenOwnerMap[tokenId] := _sender;
+
+            (*subtract one from previous token owner *)
+            somePrevBal <- ownedTokenCount[tokenOwner];
+            match somePrevBal with
+            | Some prevBal =>
+                newBal  = let one = Uint256 1 in builtin sub prevBal one;
+                ownedTokenCount[tokenOwner] := newBal
+            | None =>
+            end;
+
+            (* add one to the new token owner *)
+            userCnt <- ownedTokenCount[_sender];
+            (* Calculate the new token count value for recipient *)
+            newVal = let one = Uint256 1 in match userCnt with
+            | Some val =>
+                (* Add to existing value *)
+                builtin add val one
+            | None => one
+            end;
+            ownedTokenCount[_sender] := newVal;
+
+
+
+            et = {_eventname: "Transfer"; from: tokenOwner; to: _sender; tokenId: tokenId};
+            event et;
+
+            (* save balance for extra pay*)
+            leftAmountIsZero = builtin eq leftAmount zeroUint128;
+
+            match leftAmountIsZero with
+            | False =>
+              oldOwnerBalanceOpt <- balanceMap[tokenOwner];
+              oldOwnerBalance = toUint128 oldOwnerBalanceOpt;
+              nowOwnerBalance = builtin add oldOwnerBalance  leftAmount;
+              balanceMap[tokenOwner] := nowOwnerBalance
+            | True =>
+
+            end;
+
+            et = {_eventname: "ForceBuy"; from: tokenOwner; to: _sender; tokenId: tokenId; meta:meta; price:price;nextPrice:nextPrice; buyAt:blk};
+            event et
+
+          | True =>
+            et = {_eventname: "forceBuyError2"; price:price;amount:_amount};
+            event et
+          end
+        | False =>
+          et = {_eventname: "forceBuyError4"; tokenId:tokenId; lastTransferAt:lastTransferAt ; coolDown:coolDown; current :blk};
+          event et
+        end
+      end
+    end
+  | None => 
+    et = {_eventname: "forceBuyError1"; reason:"Not found card"};
+    event et
+  end
+end
+
+(* @dev Transfer the ownership of a given token ID to another address *)
+(* @param from:     Current owner of the token                        *)
+(* @param to:       Recipient address of the token                    *)
+(* @param tokenId   uint256 id of the token to be transferred         *)
+transition transferFrom(from: ByStr20, to: ByStr20, tokenId: Uint256)
+    copy_tokenOwnerMap <- tokenOwnerMap;
+    copy_tokenApprovals <- tokenApprovals;
+    copy_operatorApproval <- operatorApprovals;
+
+    (* Get tokenOwner ByStr20 *)
+    getTokenOwner <- tokenOwnerMap[tokenId];
+    match getTokenOwner with
+    | None =>
+        (* Token not found *)
+        e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_not_found;
+        event e;
+        msg = {_tag: "TransferFromFailureResponse";_recipient: _sender; _amount: Uint128 0 ; tokenId : tokenId };
+        msgs = one_msg msg;
+        send msgs
+
+    | Some tokenOwner =>
+
+        (* Libary functions to check for conditions *)
+        checkOwner = isTokenOwner _sender tokenId copy_tokenOwnerMap;
+        checkApproved = isApproved _sender tokenId copy_tokenApprovals;
+        checkApprovedForAll = isApprovedForAll _sender tokenOwner copy_operatorApproval;
+
+        (* Checks if the `from` is indeed the owner of the token *)
+        isFromTokenOwner = builtin eq tokenOwner from;
+        match isFromTokenOwner with
+        | False =>
+            (* From address is not the same as the tokenOwner    *)
+            e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_bad_request;
+            event e;
+            msg = {_tag: "TransferFromFailureResponse";_recipient: _sender;_amount: Uint128 0; tokenId : tokenId };
+            msgs = one_msg msg;
+            send msgs
+        | True =>
+            (* isApprovedOrOwner checks if any of the three conditions are met *)
+            isAuthorized = isApprovedOrOwner checkOwner checkApproved checkApprovedForAll;
+
+            match isAuthorized with
+            | True =>
+                (* Remove from Approval *)
+                match checkApproved with
+                | True =>
+                    (* Remove entry from approvals at the token level *)
+                    delete tokenApprovals[tokenId]
+                | False =>
+                end;
+
+                (* Change tokenOwnerMap *)
+                tokenOwnerMap[tokenId] := to;
+
+                (* Change Count *)
+                curr_otc <- ownedTokenCount;
+
+                (*subtract one from previous token owner *)
+                somePrevBal <- ownedTokenCount[from];
+                match somePrevBal with
+                | Some prevBal =>
+                    newBal  = let one = Uint256 1 in builtin sub prevBal one;
+                    ownedTokenCount[from] := newBal
+                | None =>
+                    e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_unexpected_error;
+                    event e
+                end;
+
+                (* add one to the new token owner *)
+                userCnt <- ownedTokenCount[to];
+                (* Calculate the new token count value for recipient *)
+                newVal = let one = Uint256 1 in match userCnt with
+                | Some val =>
+                    (* Add to existing value *)
+                    builtin add val one
+                | None => one
+                end;
+                ownedTokenCount[to] := newVal;
+
+                fromSender = _sender;
+                e = {_eventname: "Transfer"; from: from; to: to; tokenId: tokenId};
+                event e;
+                msg = {_tag: "TransferFromSuccessResponse";_recipient: fromSender;_amount: Uint128 0; tokenId : tokenId }; 
+(*                msg = {_tag: "testCallback";_recipient: testsender;_amount: Uint128 0; exchangeAddr:_sender ;tokenId : tokenId }; *)
+                msgs = one_msg msg;
+                send msgs
+
+
+            | False =>
+                (* Unauthorized transaction *)
+                e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_not_authorized;
+                event e;
+                msg = {_tag: "TransferFromFailureResponse";_recipient: _sender;_amount: Uint128 0; tokenId : tokenId };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    end
+end
+
+(* @dev: Approves another address to transfer the given token ID                *)
+(* - There can only be one approved address per token at a given time           *)
+(* - Absence of entry in tokenApproval indicates there is no approved address   *)
+(* param: to ByStr20 to be approved for the given token id                      *)
+(* param: tokenId uint256 id of the token to be apporved                        *)
+
+
+transition approve(to: ByStr20, tokenId: Uint256)
+
+    copy_tokenOwnerMap <- tokenOwnerMap;
+    copy_operatorApproval <- operatorApprovals;
+
+    (* Get tokenOwner ByStr20 *)
+    getTokenOwner <- tokenOwnerMap[tokenId];
+    match getTokenOwner with
+    | None =>
+        (* Token not found *)
+        e = let raisedAt = "approve" in makeErrorEvent raisedAt code_not_found;
+        event e
+    | Some tokenOwner =>
+        checkApprovedForAll = isApprovedForAll _sender tokenOwner copy_operatorApproval;
+        checkOwner = isTokenOwner _sender tokenId copy_tokenOwnerMap;
+        isAuthorized = orb checkApprovedForAll checkOwner;
+        match isAuthorized with
+        | True =>
+            (* add to token approval mapping *)
+            tokenApprovals[tokenId] := to;
+            (* Emit event *)
+            e = {_eventname: "Approve"; from: _sender; approvedTo: to; token: tokenId};
+            event e
+        | False =>
+            (* Unauthorized transaction *)
+            e = let raisedAt = "approve" in makeErrorEvent raisedAt code_not_authorized;
+            event e
+        end
+    end
+end
+
+(* @dev: sets or unsets the approval of a given operator                *)
+(* @param: address to be set or unset as operator                       *)
+(* @param: approved - status of the approval to be set                  *)
+
+transition setApprovalForAll(to: ByStr20, approved: Bool)
+
+    copy_operatorApproval <- operatorApprovals;
+    (* Checks if the _sender is approving himself *)
+    isValidOperation = let check = builtin eq _sender to in negb check;
+    (* require _sender is not approving himself *)
+    match isValidOperation with
+    | True =>
+        (* Check if sender has an existing record on the operatorApproval *)
+        operatorApprovals[_sender][to] := approved;
+        (* Stringify boolean value to be emitted in the event *)
+        approvedStr = bool_to_string approved;
+        e = {_eventname: "setApprovalForAll"; from: _sender; recipient: to; status: approvedStr};
+        event e
+    | False =>
+        e = let raisedAt = "setApprovalForAll" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+end
+
+
+
+transition withdraw(to:ByStr20)
+  currentAmountOpt <- balanceMap[to] ;
+  match currentAmountOpt with
+  | Some currentAmount =>
+    balanceMap[to] := zeroUint128;
+    msg  = {_tag : ""; _recipient : to; _amount : currentAmount};
+    msgs = one_msg msg;
+    send msgs;
+    e = {_eventname: "Withdraw"; to: to; amount:currentAmount; caller: _sender };
+    event e
+  | None =>
+  end
+
+end
+
+transition withdrawFee()
+    isAuthorized = checkContractOwner contractOwner _sender;
+    match isAuthorized with
+    | True =>
+      currFeeBalance <- feeBalance;
+      feeBalance := zeroUint128;
+      msg  = {_tag : ""; _recipient : contractOwner; _amount : currFeeBalance};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname: "WithdrawFee"; to: contractOwner; amount:currFeeBalance };
+      event e
+    | False =>
+    end
+end

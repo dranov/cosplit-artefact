@@ -1,0 +1,600 @@
+scilla_version 0
+
+(* dBonds contract *)
+
+import ListUtils BoolUtils IntUtils
+
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library DBonds
+
+(* dbond states *)
+let not_issued = Uint32 0
+let frozen_till_ver = Uint32 1
+let issued = Uint32 2
+let ex_paid_off = Uint32 3
+let ex_tech_defaulted = Uint32 4
+let ex_liquidated = Uint32 5
+let ex_defaulted = Uint32 6
+
+let tr_ordinary_code : Uint32 = Uint32 0
+let pay_off_code : Uint32 = Uint32 1 (* by emitent, to pay off the dbond *)
+let liquidation_code : Uint32 = Uint32 2 (* by liqag to deposit value from orig. bond liquidation *)
+let dbond_deposit_code : Uint32 = Uint32 3 (* by emitent to deposit acuired tokens *)
+let dbond_exchange_code : Uint32 = Uint32 4 (* by dbond holder *)
+
+let zero = Uint128 0
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+type FiatBond = 
+    | FiatBondCon of Uint32 (*maturity timestamp*) 
+                  String (*ISIN*)
+type Fcdb = 
+  | FcdbCon of FiatBond (*the fiat bond lying as collateral*)
+            Uint128 (*total supply*)
+            Uint32 (*maturity timestamp*)
+            Uint32 (*retire timestamp*)
+            ByStr20 (*issuer of unit of account*)
+            Uint128 (*number of unit of account tokens to pay off at maturity, 100 goes for 1 token*)
+            ByStr20 (*verification account*)
+            ByStr20 (*accounts served as counterparty*)
+            ByStr20 (*account served as liquidation agent*)
+            Uint32 (*annual percentage rate, 1000 goes for 10%*)
+            String (*escrow contract link*)
+
+let is_final_state = 
+  fun(state : Uint32) =>
+  let is_paid_state = builtin eq state ex_paid_off in
+  let is_def_state = builtin eq state ex_defaulted in
+  let is_liq_state = builtin eq state ex_liquidated in
+  let temp1 = orb is_paid_state is_def_state in
+  orb temp1 is_liq_state
+
+(* returns Some new_price if succeeds, None otherwise *)
+(* time, state and balance are considered up-to-date *)
+let upd_price =
+  fun(cur_time : Uint32) =>
+  fun(cur_db : Fcdb) =>
+  fun(cur_st : Uint32) =>
+  match cur_db with
+  | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+    let zero_price = builtin lt issued cur_st in
+    match zero_price with
+    | True =>
+      Some {Uint128} zero
+    | False =>
+      let before_ex_time = builtin lt cur_time mat_t in
+      match before_ex_time with
+      | False =>
+        Some {Uint128} pr_am
+      | True =>
+        let ticks_left = builtin sub mat_t cur_time in
+        let ticks_left = builtin to_uint128 ticks_left in
+        match ticks_left with
+        | Some ticks_left =>
+          let ticks_per_year = Uint128 31536000 in
+          let tmp1 = builtin mul pr_am ticks_per_year in
+          let tmp2 = Uint128 10000 in
+          let nominator = builtin mul tmp1 tmp2 in
+          let apr = builtin to_uint128 apr in
+          match apr with
+          | Some apr =>
+            let one = Uint128 10000 in
+            let tmp3 = builtin mul ticks_left apr in
+            let tmp4 = builtin mul one ticks_per_year in
+            let denom = builtin add tmp3 tmp4 in
+            let ans = builtin div nominator denom in
+            Some {Uint128} ans
+          | None => None {Uint128}
+          end
+        | None => None {Uint128}
+        end
+      end
+    end
+  end
+
+let upd_timestate = 
+  fun(cur_timestamp : Uint32) =>
+  fun(dbond : Fcdb) =>
+  fun (cur_state : Uint32) =>
+  let not_iss = builtin lt cur_state issued in
+  let is_final = is_final_state cur_state in
+  let ret_same = orb not_iss is_final in
+  match ret_same with
+  | True =>
+    cur_state
+  | False =>
+    match dbond with
+    | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+      let before_mat = builtin lt cur_timestamp mat_t in
+      match before_mat with
+      | True => 
+        cur_state
+      | False =>
+        let before_ret = builtin lt cur_timestamp ret_t in
+        match before_ret with
+        | True =>
+          ex_tech_defaulted
+        | False =>
+          ex_defaulted
+        end
+      end
+    end
+  end
+
+  (***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract DBonds
+(owner: ByStr20,
+decimals : Uint32,
+name : String,
+symbol : String,
+time_oracle : ByStr20,
+swap_contract : ByStr20)
+
+field dbond : Fcdb = 
+  let z32 = Uint32 0 in
+  let z128 = Uint128 0 in
+  let emptstr = "" in
+  let zx = builtin ripemd160hash z32 in
+  let fb = FiatBondCon z32 emptstr in
+  FcdbCon fb z128 z32 z32 zx z128 zx zx zx z32 emptstr
+
+field cur_timestamp : Uint32 = Uint32 0
+field cur_price : Uint128 = Uint128 0
+field cur_state : Uint32 = Uint32 0
+
+
+(*owner balance will be initialized at verification stage*)
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field allowed : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+
+(*to create or overwrite dbond by owner while state is less than issued*)
+transition CreateUpdateDBond (init_dbond : Fcdb)
+  valid_auth = builtin eq owner _sender;
+  match valid_auth with
+  | True =>
+    cur_db <- dbond;
+    cur_st <- cur_state;
+    not_iss = builtin eq cur_st not_issued;
+    match not_iss with
+    | True =>
+      dbond := init_dbond;
+      e = {_eventname : "CreateUpdateDBondSuccess"; caller : _sender};
+      event e
+    | False =>
+      e = {_eventname : "CreateUpdateDBondFailureState"; caller : _sender};
+      event e
+    end
+  | False =>
+    e = {_eventname : "CreateUpdateDBondFailureAuth"; caller : _sender};
+    event e
+  end
+end
+
+transition FreezeTillVer()
+  valid_auth = builtin eq _sender owner;
+  cur_st <- cur_state;
+  valid_state = builtin eq cur_st not_issued;
+  match valid_auth with
+  | True =>
+    match valid_state with
+    | True =>
+      cur_state := frozen_till_ver;
+      e = {_eventname : "FreezeTillVerSuccess"; caller : _sender};
+      event e
+    | False =>
+      e = {_eventname : "FreezeTillVerFailureState"; caller : _sender};
+      event e
+    end
+  | False =>
+    e = {_eventname : "FreezeTillVerFailureAuth"; caller : _sender};
+    event e
+  end
+end
+
+(* all cur-fields are expected to be up-to-date *)
+transition VerifyDBond ()
+  cur_db <- dbond;
+  cur_st <- cur_state;
+  match cur_db with
+  | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+    valid_auth = builtin eq _sender ver;
+    valid_state = builtin eq cur_st frozen_till_ver;
+    match valid_state with
+    | True =>
+      match valid_auth with
+      | True =>
+        cur_state := issued;
+        balances[owner] := suppl;
+        e = {_eventname : "VerifyDBondSuccess"; caller : _sender};
+        event e;
+        msg = { _tag : "AddDbond"; _recipient : swap_contract; _amount : zero; dbond : cur_db};
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        e = {_eventname : "VerifyDBondFailureAuth"; caller : _sender};
+        event e
+      end
+    | False =>
+      e = {_eventname : "VerifyDBondFailureState"; caller : _sender};
+      event e
+    end
+  end
+end
+
+(* public transition to update current time *)
+transition RequestTime()
+  msg = { _tag : "SendTime"; _recipient : time_oracle; _amount : zero};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition OnGetTime (new_timestamp : Uint32)
+  valid_auth = builtin eq _sender time_oracle;
+  match valid_auth with
+  | True =>
+    cur_timestamp := new_timestamp;
+    e = {_eventname : "OnGetTimeSuccess"; caller : _sender; new_timestamp : new_timestamp};
+    event e
+  | False =>
+    e = {_eventname : "OnGetTimeFailureAuth"; caller : _sender; new_timestamp : new_timestamp};
+    event e
+  end
+end
+
+(*return price in cents, all cur_state cur_timestamp are expected to be up-to-date*)
+transition GetUpdCurPrice ()
+  cur_time <- cur_timestamp;
+  cur_db <- dbond;
+  cur_st <- cur_state;
+  valid_state = builtin lt frozen_till_ver cur_st;
+  match valid_state with
+  | True =>
+    new_price = upd_price cur_time cur_db cur_st;
+    match new_price with
+    | Some new_price =>
+      cur_price := new_price;
+      msg = { _tag : "OnGetPrice"; _recipient : _sender; _amount : zero; upd_price : new_price};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname : "GetUpdCurPriceSuccess"; caller : _sender; upd_price : new_price};
+      event e
+    | None =>
+        e = {_eventname : "GetUpdCurPriceFailure"; caller : _sender};
+        event e
+    end
+  | False =>
+    e = {_eventname : "GetUpdCurPriceFailureState"; caller : _sender};
+    event e
+  end
+end
+
+(* dbond is defaulted only if somebody claimed a default *)
+transition ClaimDefault()
+  cur_st <- cur_state;
+  cur_time <- cur_timestamp;
+  cur_db <- dbond;
+  bal <- balances[owner];
+  new_state = upd_timestate cur_time cur_db cur_st;
+  is_iss = builtin eq cur_st issued;
+  to_tdef = builtin eq new_state ex_tech_defaulted;
+  to_def = builtin eq new_state ex_defaulted;
+  def = orb to_def to_tdef;
+  flag = andb is_iss def;
+  match flag with
+  | True =>
+    cur_state := new_state;
+    e = {_eventname : "ClaimDefaultSuccess"; caller : _sender; old_state : cur_st; new_state : new_state};
+    event e
+  | False =>
+    e = {_eventname : "ClaimDefaultFailureState"; caller : _sender; old_state : cur_st; new_state : cur_st};
+    event e
+  end
+end
+
+(* update cur_state inside, time is considered to be up-to-date*)
+transition PayOffDBond ()
+  bal <- balances[owner];
+  match bal with 
+  | Some bal =>
+    cur_db <- dbond;
+    cur_time <- cur_timestamp;
+    cur_st <- cur_state;
+
+    is_iss = builtin eq cur_st issued;
+    match is_iss with
+    | True =>
+      match cur_db with
+      | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+        needed_am = builtin sub suppl bal;
+        needed_am = builtin mul needed_am pr_am;
+        msg = { _tag : "Transfer"; _recipient : pr_iss; _amount : zero; 
+                 to : swap_contract; tokens : needed_am; code : pay_off_code};
+        msgs = one_msg msg;
+        send msgs
+      end
+    | False =>
+      e = {_eventname : "RetireBondFailureState"; caller : _sender};
+      event e
+    end
+  | None =>
+    e = {_eventname : "RetireBondFailureBalance"; caller : _sender};
+    event e
+  end
+end
+
+(* is called from swap contract *)
+transition OnSuccPayOff ()
+  valid_auth = builtin eq _sender swap_contract;
+  cur_st <- cur_state;
+  valid_state = builtin eq cur_st issued;
+  match valid_auth with
+  | True =>
+    match valid_state with
+    | True =>
+      cur_state := ex_paid_off
+    | False =>
+      e = {_eventname : "OnSuccPayOffFailureState"; caller : _sender};
+      event e
+    end
+  | False =>
+    e = {_eventname : "OnSuccPayOffFailureAuth"; caller : _sender};
+    event e
+  end
+end
+
+(* is called from swap contract *)
+transition OnSuccLiq ()
+  valid_auth = builtin eq _sender swap_contract;
+  cur_st <- cur_state;
+  valid_state = builtin eq cur_st ex_tech_defaulted;
+  match valid_auth with
+  | True =>
+    match valid_state with
+    | True =>
+      cur_state := ex_liquidated
+    | False =>
+      e = {_eventname : "OnSuccLiqOffFailureState"; caller : _sender};
+      event e
+    end
+  | False =>
+    e = {_eventname : "OnSuccLiqFailureAuth"; caller : _sender};
+    event e
+  end
+end
+
+(* receive only from pr_iss and only as a payment from liquidation of orig. bond *)
+transition TransferSuccess (sender : ByStr20, amount : Uint128, code : Uint32)
+  ordinary_transfer = builtin eq code tr_ordinary_code;
+  match ordinary_transfer with
+  | True =>
+  | False =>
+    valid_code = builtin eq code liquidation_code;
+    match valid_code with
+    | True =>
+      cur_st <- cur_state;
+      is_tech_def = builtin eq cur_st ex_tech_defaulted;
+      match is_tech_def with
+      | True =>
+        db <- dbond;
+        match db with
+        | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+          valid_auth = builtin eq _sender pr_iss;
+          match valid_auth with
+          | True =>
+              valid_sender = builtin eq sender liqag;
+              match valid_sender with
+              | True =>
+                accept;
+                msg = { _tag : "Transfer"; _recipient : pr_iss; _amount : zero; 
+                      to : swap_contract; tokens : amount; code : liquidation_code};
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                e = {_eventname : "TransferSuccessFailureSender"; caller : _sender; sender : sender};
+                event e
+              end
+          | False =>
+            e = {_eventname : "TransferSuccessFailureAuth"; caller : _sender; sender : sender};
+            event e
+          end
+        end
+      | False =>
+        e = {_eventname : "TransferSuccessFailureState"; caller : _sender; sender : sender};
+        event e
+      end
+    | False =>
+      e = {_eventname : "TransferSuccessFailureCode"; caller : _sender; sender : sender};
+      event e
+    end
+  end
+end
+
+(**************************************)
+(* classic fungible token transitions *)
+(**************************************)
+transition BalanceOf (tokenOwner : ByStr20)
+  bal <- balances[tokenOwner];
+  match bal with
+  | Some v =>
+    msg = { _tag : "BalanceOfResponse"; _recipient : _sender; _amount : zero;
+            address : tokenOwner; balance : v};
+    msgs = one_msg msg;
+    send msgs
+  | None =>
+    msg = { _tag : "BalanceOfResponse"; _recipient : _sender; _amount : zero;
+            address : tokenOwner; balance : zero};
+    msgs = one_msg msg;
+    send msgs
+  end
+end
+
+transition TotalSupply ()
+  cur_db <- dbond;
+  cur_st <- cur_state;
+  match cur_db with
+  | FcdbCon fiat_bond suppl mat_t ret_t pr_iss pr_am ver countrp liqag apr escrlink =>
+    is_issued = builtin lt issued cur_st;
+    match is_issued with
+    | True =>
+      msg = { _tag : "TotalSupplyResponse"; _recipient : _sender; _amount : zero;
+            caller : _sender; totalSupply : suppl};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg = { _tag : "TotalSupplyResponse"; _recipient : _sender; _amount : zero;
+            caller : _sender; totalSupply : zero};
+      msgs = one_msg msg;
+      send msgs
+    end
+  end
+end
+
+(* TransferSuccess notification is sent to "to" *)
+transition Transfer (to : ByStr20, tokens : Uint128, code : Uint32)
+  bal <- balances[_sender];
+  match bal with
+  | Some b =>
+    can_do = le_int tokens b;
+    match can_do with
+    | True =>
+      (* subtract tokens from _sender and add it to "to" *)
+      new_sender_bal = builtin sub b tokens;
+      balances[_sender] := new_sender_bal;
+
+      (* Adds tokens to "to" address *)
+      to_bal <- balances[to];
+      new_to_bal = match to_bal with
+      | Some x => builtin add x tokens
+      | None => tokens
+      end;
+
+  	  balances[to] := new_to_bal;
+      msg = { _tag : "TransferSuccess"; _recipient : to; _amount : zero;
+              sender : _sender; amount : tokens; code : code};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (* balance not sufficient. *)
+      msg = { _tag : "TransferFailure"; _recipient : _sender; _amount : zero;
+              sender : _sender; amount : zero; code : code};
+      msgs = one_msg msg;
+      send msgs
+    end
+  | None =>
+    (* no balance record, can't transfer *)
+    msg = { _tag : "TransferFailure"; _recipient : _sender; _amount : zero;
+            sender : _sender; amount : zero; code : code};
+    msgs = one_msg msg;
+    send msgs
+  end
+end
+
+transition TransferFrom (from : ByStr20, to : ByStr20, tokens : Uint128)
+  bal <- balances[from];
+  (* Check if _sender has been authorized by "from" *)
+  sender_allowed_from <- allowed[from][_sender];
+  match bal with
+  | Some a =>
+    match sender_allowed_from with
+    | Some b =>
+        (* We can only transfer the minimum of available or authorized tokens *)
+        t = min_int a b;
+        can_do = le_int tokens t;
+        match can_do with
+        | True =>
+            (* tokens is what we should subtract from "from" and add to "to" *)
+            new_from_bal = builtin sub a tokens;
+            balances[from] := new_from_bal;
+            to_bal <- balances[to];
+            match to_bal with
+            | Some tb =>
+                new_to_bal = builtin add tb tokens;
+                balances[to] := new_to_bal
+            | None =>
+                (* "to" has no balance. So just set it to tokens *)
+                balances[to] := tokens
+            end;
+            (* reduce "allowed" by "tokens" *)
+            new_allowed = builtin sub b tokens;
+            allowed[from][_sender] := new_allowed;
+            msg = { _tag : "TransferFromSuccess"; _recipient : _sender; _amount : zero;
+                    sender : from; recipient : to; amount : tokens };
+            msgs = one_msg msg;
+            send msgs
+        | False =>
+            msg = { _tag : "TransferFromFailure"; _recipient : _sender; _amount : zero;
+                    sender : from; recipient : to; amount : zero };
+            msgs = one_msg msg;
+            send msgs
+        end
+    | None =>
+        msg = { _tag : "TransferFromFailure"; _recipient : _sender; _amount : zero;
+                sender : from; recipient : to; amount : zero };
+        msgs = one_msg msg;
+        send msgs
+    end
+  | None =>
+  msg = { _tag : "TransferFromFailure"; _recipient : _sender; _amount : zero;
+            sender : from; recipient : to; amount : zero };
+    msgs = one_msg msg;
+    send msgs
+  end
+end
+
+transition Approve (spender : ByStr20, tokens : Uint128)
+  allowed[_sender][spender] := tokens;
+  msg = { _tag : "ApproveSuccess"; _recipient : _sender; _amount : zero;
+          approver : _sender; spender : spender; amount : tokens };
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition Allowance (tokenOwner : ByStr20, spender : ByStr20)
+  spender_allowance <- allowed[tokenOwner][spender];
+  match spender_allowance with
+  | Some n =>
+      msg = { _tag : "AllowanceResponse"; _recipient : _sender; _amount : zero;
+              owner : tokenOwner; spender : spender; amount : n };
+      msgs = one_msg msg;
+      send msgs
+  | None =>
+      msg = { _tag : "AllowanceResponse"; _recipient : _sender; _amount : zero;
+              owner : tokenOwner; spender : spender; amount : zero };
+      msgs = one_msg msg;
+      send msgs
+  end
+end

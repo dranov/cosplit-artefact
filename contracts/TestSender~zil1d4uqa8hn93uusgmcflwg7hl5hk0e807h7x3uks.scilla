@@ -1,0 +1,26 @@
+scilla_version 0
+
+library TestSender
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+Cons {Message} msg nil_msg
+
+contract TestSender(contractOwner :ByStr20)
+
+
+
+transition testSender(sender: ByStr20)
+  eq1 = builtin eq sender _sender;
+  eq2 = builtin eq sender contractOwner;
+
+  e = {_eventname:"test equal" ; eq1:eq1 ;eq2:eq2};
+  event e
+end
+
+transition testCallback(exchangeAddr:ByStr20,tokenId:Uint256)
+    msg = {_tag: "TransferFromSuccessResponse";_recipient: exchangeAddr;_amount: Uint128 0; tokenId : tokenId };
+    msgs = one_msg msg;
+    send msgs
+end
+

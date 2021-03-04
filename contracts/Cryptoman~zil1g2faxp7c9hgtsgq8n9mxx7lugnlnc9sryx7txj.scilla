@@ -1,0 +1,47 @@
+scilla_version 0
+
+(* HelloWorld contract *)
+
+import ListUtils
+
+
+library Cryptoman
+
+let one_msg =
+  fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract Cryptoman
+(owner: ByStr20)
+
+
+transition withdraw (amount: Uint128, receiver: ByStr20)
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | False =>
+    e = {_eventname : "error"; msg : "failed. sender is not the owner."};
+    event e
+  | True =>
+    msg = {_tag : ""; _recipient : receiver; _amount : amount};
+    msgs = one_msg msg;
+    send msgs;
+    e = {_eventname : "withdrawal success"; to: receiver; amn : amount };
+    event e
+  end
+end
+
+transition deposit ()
+    accept;
+    e = {_eventname : "deposit"; from: _sender; amn: _amount};
+    event e
+end
+
+transition contrAddr()
+  msg1 = {_eventname : "ContractAddress"; addr : _this_address };
+  event msg1
+end

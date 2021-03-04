@@ -1,0 +1,425 @@
+scilla_version 0
+
+import BoolUtils
+
+library Hub
+
+let one = Uint128 1
+let zero = Uint128 0
+let zero_address = 0x0000000000000000000000000000000000000000
+let tt = True
+let ff = False
+
+let already_initialized_code = Uint32 1
+let market_already_exists_code = Uint32 2
+let token_not_found_code = Uint32 3
+let private_function_called_code = Uint32 7
+let bad_recipient_code = Uint32 8
+let bad_allowance_code = Uint32 10
+
+(* Modified from SimpleDex *)
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* Is a_arg an approved address? *)
+let approved_address =
+    fun (a_arg : ByStr20) =>
+    fun (a_1 : ByStr20) =>
+    fun (a_2 : ByStr20) =>
+    fun (a_3 : ByStr20) =>
+        let eq_a_1 = builtin eq a_arg a_1 in
+        let eq_a_2 = builtin eq a_arg a_2 in
+        let eq_a_3 = builtin eq a_arg a_3 in
+        let in_a_1_2 = orb eq_a_1 eq_a_2 in
+        orb in_a_1_2 eq_a_3
+
+contract Hub
+()
+
+field token_count : Uint128 = zero
+field id_to_token : Map Uint128 ByStr20 = Emp Uint128 ByStr20
+field token_reserves : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field token_total_supplies : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field token_balances : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+field token_allowances : Map ByStr20 (Map ByStr20 (Map ByStr20 Uint128)) = Emp ByStr20 (Map ByStr20 (Map ByStr20 Uint128))
+
+(* Zil allocation of each token, like balance in UniSwap exchange *)
+field token_zil_balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+(* Keep track of tokens, aux contracts, and approvals *)
+field token_contract_allowances : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+(* This hub's auxiliary contracts *)
+field initialized : Bool = ff
+field liquidity_manager : ByStr20 = zero_address
+field zil_to_token : ByStr20 = zero_address
+field token_to_zil : ByStr20 = zero_address
+
+(* Initializes contract's auxiliary contracts *)
+transition Initialize(l_m_address : ByStr20, z_t_address : ByStr20, t_z_address : ByStr20)
+    init <- initialized;
+    match init with
+    |   False =>
+        initialized := tt;
+        liquidity_manager := l_m_address;
+        zil_to_token := z_t_address;
+        token_to_zil := t_z_address;
+        msg = { _tag : "InitializeSuccess"; _recipient : _sender; _amount : zero;
+                l_m_address : l_m_address; z_t_address : z_t_address; t_z_address : t_z_address };
+        msgs = one_msg msg;
+        send msgs
+    |   True =>
+        msg = { _tag : "InitializeFailure"; _recipient : _sender; _amount : zero;
+                l_m_address : l_m_address; z_t_address : z_t_address; t_z_address : t_z_address;
+                code : already_initialized_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(* Approve an auxiliary address for this token *)
+(* Must be an approved aux address *)
+(* Required before performing certain actions *)
+transition ApproveAux (token : ByStr20, aux : ByStr20, limit : Uint128)
+    l_m <- liquidity_manager;
+    z_t <- zil_to_token;
+    t_z <- token_to_zil;
+    aux_approved = approved_address aux l_m z_t t_z;
+    match aux_approved with
+    |   True =>
+        total_supply <- token_total_supplies[token];
+        match total_supply with
+        |   Some t_s =>
+            allowed <- token_contract_allowances[token][aux];
+            match allowed with
+            |   None =>
+                msg = { _tag : "Approve"; _recipient : token; _amount : zero;
+                        spender : aux; tokens : limit };
+                msgs = one_msg msg;
+                send msgs
+            |   Some a =>
+                is_raise = builtin lt a limit;
+                match is_raise with
+                |   True =>
+                    msg = { _tag : "Approve"; _recipient : token; _amount : zero;
+                            spender : aux; tokens : limit };
+                    msgs = one_msg msg;
+                    send msgs
+                |   False =>
+                    msg = { _tag : "ApproveAuxFailure"; _recipient : _sender; _amount : zero;
+                            code : bad_allowance_code };
+                    msgs = one_msg msg;
+                    send msgs
+                end
+            end
+        |   None =>
+            msg = { _tag : "ApproveAuxFailure"; _recipient : _sender; _amount : zero;
+                    code : token_not_found_code };
+            msgs = one_msg msg;
+            send msgs
+        end
+    |   False =>
+        msg = { _tag : "ApproveAuxFailure"; _recipient : _sender; _amount : zero;
+                code : bad_allowance_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(* Creates a token market *)
+transition CreateMarket (token : ByStr20)
+    balances <- token_balances[token];
+    match balances with
+    |   Some bs =>
+        msg = { _tag : "CreateMarketFailure"; _recipient : _sender; _amount : zero;
+                code : market_already_exists_code };
+        msgs = one_msg msg;
+        send msgs
+    |   None =>
+        (* Update token_count *)
+        t_c <- token_count;
+        t_c_new = builtin add t_c one;
+        token_count := t_c_new;
+        (* Update id_to_token *)
+        id_to_token[t_c_new] := token;
+        (* Update token_reserves *)
+        token_reserves[token] := zero;
+        (* Update token_total_supplies *)
+        token_total_supplies[token] := zero;
+        (* Update token_balances *)
+        balances_new = Emp ByStr20 Uint128;
+        token_balances[token] := balances_new;
+        (* Update token_allowances *)
+        allowances_new = Emp ByStr20 (Map ByStr20 Uint128);
+        token_allowances[token] := allowances_new;
+        token_zil_balances[token] := zero;
+        msg = { _tag : "CreateMarketSuccess"; _recipient : _sender; _amount : zero };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(*** External Contract Calls ***)
+
+(** LiquidityManager Calls **)
+(* Interface for AddLiquidityCore *)
+transition AddLiquidity (token : ByStr20, min_liquidity : Uint128,
+        max_tokens : Uint128, deadline : BNum)
+    (* payable *)
+    accept;
+    l_m <- liquidity_manager;
+    total_supply <- token_total_supplies[token];
+    token_reserve <- token_reserves[token];
+    token_zil_balance <- token_zil_balances[token];
+    sender_balance <- token_balances[token][_sender];
+    msg = { _tag : "AddLiquidityCore"; _recipient : l_m; _amount : zero;
+            token : token; min_liquidity : min_liquidity; max_tokens : max_tokens; deadline : deadline;
+            total_supply : total_supply; sender_balance : sender_balance;
+            token_reserve : token_reserve; balance : token_zil_balance;
+            zil_sold : _amount; sender : _sender };
+    msgs = one_msg msg;
+    send msgs
+end
+
+(* Interface for RemoveLiquidityCore *)
+transition RemoveLiquidity (token : ByStr20, amount : Uint128, min_zil : Uint128,
+        min_tokens : Uint128, deadline : BNum, recipient : ByStr20)
+    (* token_total_supplies[token], token_reserves[token], _balance, token_balances[token][_sender],  *)
+    l_m <- liquidity_manager;
+    total_supply <- token_total_supplies[token];
+    reserve <- token_reserves[token];
+    token_zil_balance <- token_zil_balances[token];
+    sender_balance <- token_balances[token][_sender];
+    msg = { _tag : "RemoveLiquidityCore"; _recipient : l_m; _amount : zero;
+            token : token; amount : amount; min_tokens : min_tokens; deadline : deadline; recipient : recipient;
+            total_supply : total_supply; sender_balance : sender_balance; reserve : reserve; balance : token_zil_balance;
+            sender : _sender };
+    msgs = one_msg msg;
+    send msgs
+end
+
+(** ZilToToken Calls **)
+(* Input calls *)
+transition ZilToTokenSwapInput (token : ByStr20, min_tokens : Uint128,
+        deadline : BNum)
+    (* payable *)
+    (* calls ZilToTokenInput() *)
+    accept;
+    z_t <- zil_to_token;
+    token_reserve <- token_reserves[token];
+    token_zil_balance <- token_zil_balances[token];
+    msg = { _tag : "ZilToTokenInput"; _recipient : z_t; _amount : zero;
+            token : token; zil_sold : _amount; min_tokens : min_tokens;
+            deadline : deadline; buyer : _sender; recipient : _sender;
+            token_reserve : token_reserve; balance : token_zil_balance };
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition ZilToTokenTransferInput (token : ByStr20, min_tokens : Uint128,
+        deadline : BNum, recipient : ByStr20)
+    (* payable *)
+    (* calls ZilToTokenInput() *)
+    r_eq_ta = builtin eq recipient _this_address;
+    match r_eq_ta with
+    |   False =>
+        accept;
+        z_t <- zil_to_token;
+        token_reserve <- token_reserves[token];
+        token_zil_balance <- token_zil_balances[token];
+        msg = { _tag : "ZilToTokenInput"; _recipient : z_t; _amount : zero;
+                token : token; zil_sold : _amount; min_tokens : min_tokens;
+                deadline : deadline; buyer : _sender; recipient : recipient;
+                token_reserve : token_reserve; balance : token_zil_balance };
+        msgs = one_msg msg;
+        send msgs
+    |   True =>
+        msg = { _tag : "ZilToTokenTransferInputFailure"; _recipient : _sender; _amount : zero;
+                code : bad_recipient_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(* Output calls *)
+transition ZilToTokenSwapOutput (token : ByStr20, tokens_bought : Uint128,
+        deadline : BNum)
+    (* payable *)
+    (* calls ZilToTokenOutput() *)
+    accept;
+    z_t <- zil_to_token;
+    token_reserve <- token_reserves[token];
+    token_zil_balance <- token_zil_balances[token];
+    msg = { _tag : "ZilToTokenOutput"; _recipient : z_t; _amount : zero;
+            token : token; tokens_bought : tokens_bought; max_zil : _amount;
+            deadline : deadline; buyer : _sender; recipient : _sender;
+            token_reserve : token_reserve; balance : token_zil_balance };
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition ZilToTokenTransferOutput(token : ByStr20, tokens_bought : Uint128,
+        deadline : BNum, recipient : ByStr20)
+    (* payable *)
+    (* calls ZilToTokenOutput() *)
+    r_eq_ta = builtin eq recipient _this_address;
+    match r_eq_ta with
+    |   False =>
+        accept;
+        z_t <- zil_to_token;
+        token_reserve <- token_reserves[token];
+        token_zil_balance <- token_zil_balances[token];
+        msg = { _tag : "ZilToTokenOutput"; _recipient : z_t; _amount : zero;
+                token : token; tokens_bought : tokens_bought; max_zil : _amount;
+                deadline : deadline; buyer : _sender; recipient : recipient;
+                token_reserve : token_reserve; balance : token_zil_balance };
+        msgs = one_msg msg;
+        send msgs
+    |   True =>
+        msg = { _tag : "ZilToTokenTransferOutputFailure"; _recipient : _sender; _amount : zero;
+                code : bad_recipient_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(** TokenToZil Calls **)
+(* Input calls *)
+transition TokenToZilSwapInput (token : ByStr20, tokens_sold : Uint128,
+        min_zil : Uint128, deadline : BNum)
+    (* calls TokenToZilInput() *)
+    t_z <- token_to_zil;
+    token_reserve <- token_reserves[token];
+    token_zil_balance <- token_zil_balances[token];
+    msg = { _tag : "TokenToZilInput"; _recipient : t_z; _amount : zero;
+            token : token; tokens_sold : tokens_sold; min_zil : min_zil;
+            deadline : deadline; buyer : _sender; recipient : _sender;
+            token_reserve : token_reserve; balance : token_zil_balance };
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition TokenToZilTransferInput (token : ByStr20, tokens_sold : Uint128,
+        min_zil : Uint128, deadline : BNum, recipient : ByStr20)
+    (* calls TokenToZilInput() *)
+    r_eq_ta = builtin eq recipient _this_address;
+    match r_eq_ta with
+    |   False =>
+        t_z <- token_to_zil;
+        token_reserve <- token_reserves[token];
+        token_zil_balance <- token_zil_balances[token];
+        msg = { _tag : "TokenToZilInput"; _recipient : t_z; _amount : zero;
+                token : token; tokens_sold : tokens_sold; min_zil : min_zil;
+                deadline : deadline; buyer : _sender; recipient : recipient;
+                token_reserve : token_reserve; balance : token_zil_balance };
+        msgs = one_msg msg;
+        send msgs
+    |   True =>
+        msg = { _tag : "TokenToZilTransferInputFailure"; _recipient : _sender; _amount : zero;
+                code : bad_recipient_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+
+(*** Response Functions ***)
+(** Success Response **)
+(* Response function for successful LiquidityManager action *)
+transition LiquidityManagerSuccess(sender : ByStr20, refund : Uint128, token : ByStr20,
+        total_supply_new : Uint128, token_reserve_new : Uint128, sender_balance_new : Uint128,
+        token_zil_balance_new : Uint128)
+    l_m <- liquidity_manager;
+    l_m_sent = builtin eq l_m _sender;
+    match l_m_sent with
+    |   True =>
+        token_total_supplies[token] := total_supply_new;
+        token_reserves[token] := token_reserve_new;
+        token_balances[token][sender] := sender_balance_new;
+        token_zil_balances[token] := token_zil_balance_new;
+        msg = { _tag : "LiquidityManagerSuccess"; _recipient : sender; _amount : refund };
+        msgs = one_msg msg;
+        send msgs
+    |   False =>
+        msg = { _tag : "LiquidityManagerSuccessFailure"; _recipient : _sender; _amount : zero;
+                code : private_function_called_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(* Response function for successful ZilToToken action *)
+transition TradeSuccess(sender : ByStr20, refund : Uint128, token : ByStr20, token_reserve_new : Uint128,
+        token_zil_balance_new : Uint128)
+    l_m <- liquidity_manager;
+    z_t <- zil_to_token;
+    t_z <- token_to_zil;
+    aux_sent = approved_address _sender l_m z_t t_z;
+    match aux_sent with
+    |   True =>
+        token_reserves[token] := token_reserve_new;
+        token_zil_balances[token] := token_zil_balance_new;
+        msg = { _tag : "TradeSuccess"; _recipient : sender; _amount : refund };
+        msgs = one_msg msg;
+        send msgs
+    |   False =>
+        msg = { _tag : "TradeSuccessFailure"; _recipient : _sender; _amount : zero;
+                code : private_function_called_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(** Failure Response **)
+(* Response function for unsuccessful actions *)
+transition ActionFailure(sender : ByStr20, refund : Uint128, label : String, code : Uint32)
+    l_m <- liquidity_manager;
+    z_t <- zil_to_token;
+    t_z <- token_to_zil;
+    aux_sent = approved_address _sender l_m z_t t_z;
+    match aux_sent with
+    |   True =>
+        msg = { _tag : "ActionFailure"; _recipient : sender; _amount : refund;
+                label : label; code : code };
+        msgs = one_msg msg;
+        send msgs
+    |   False =>
+        msg = { _tag : "ActionFailureFailure"; _recipient : _sender; _amount : zero;
+                label : label; code : private_function_called_code };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(** Getters **)
+
+(* Gets token address from token_id *)
+transition TokenAddress (token_id : Uint128)
+    (* returns Option ByStr20 in token_address *)
+    token_address <- id_to_token[token_id];
+    msg = { _tag : "TokenAddressResponse"; _recipient : _sender; _amount : zero;
+            token_address : token_address };
+    msgs = one_msg msg;
+    send msgs
+end
+
+(* Gets the total_supply of a token *)
+transition TotalSupply (token : ByStr20)
+    (* returns Option Uint128 in total_supply *)
+    total_supply <- token_total_supplies[token];
+    msg = { _tag : "TotalSupplyResponse"; _recipient : _sender; _amount : zero;
+            total_supply : total_supply };
+    msgs = one_msg msg;
+    send msgs
+end
+
+(* Gets the reserve of a token *)
+transition Reserve (token : ByStr20)
+    (* returns Option Uint128 in total_supply *)
+    reserve <- token_reserves[token];
+    msg = { _tag : "ReserveResponse"; _recipient : _sender; _amount : zero;
+            reserve : reserve };
+    msgs = one_msg msg;
+    send msgs
+end

@@ -1,0 +1,117 @@
+scilla_version 0
+
+
+import ListUtils
+
+
+library Dice
+
+let zero = Uint256 0
+let max = Uint128 100
+
+(* for sending message *)
+let one_msg = 
+  fun (msg : Message) => 
+      let nil_msg = Nil {Message} in
+      Cons {Message} msg nil_msg
+
+let coefficient = 
+    fun (_rol : Uint128) =>
+        builtin div max _rol
+      
+let check_win = 
+  fun (_entropy : Uint256) =>
+  fun (_amount  : Uint128) =>
+  fun (_rol     : Uint128) =>
+    let r = builtin to_uint128 _entropy in
+    match r with
+    | Some v => 
+        let isWin = builtin lt v _rol in
+        match isWin with
+        | True =>
+            let min_coefficient = coefficient _rol in
+            builtin mul _amount min_coefficient
+        | False => Uint128 0
+        end
+    | None => Uint128 0
+    end
+
+
+contract Dice
+    (owner: ByStr20)
+    
+(* min amount is 10ZIL *)
+field minAmount : Uint128 = Uint128 10000000000000
+field entropy : Uint256 = Uint256 0
+
+transition Roll(rol : Uint128)
+    blk <- & BLOCKNUMBER;
+    entropyNumber <- entropy;
+    contractBalance <- _balance;
+
+    max = Uint256 100;
+    
+    entropyHash = builtin keccak256hash entropyNumber;
+    blkHash = builtin keccak256hash blk;
+    rolHash = builtin keccak256hash rol;
+    amountHash = builtin keccak256hash _amount;
+    senderHash = builtin keccak256hash _sender;
+    balancehash = builtin keccak256hash contractBalance;
+    
+    rhash = builtin concat blkHash balancehash;
+    rhash = builtin concat rhash entropyHash;
+    rhash = builtin concat rhash senderHash;
+    rhash = builtin concat rhash rolHash;
+    rhash = builtin concat rhash amountHash;
+    rhash = builtin keccak256hash rhash;
+    
+    number = builtin to_uint256 rhash;
+    nrem = builtin rem number max;
+    winAmount = check_win nrem _amount rol;
+    
+    entropy := nrem;
+    
+    accept;
+    
+    msg = {
+        _tag       : "Roll";
+        _recipient : _sender;
+        _amount    : winAmount;
+        entropy    : nrem;
+        rol        : rol
+    };
+    e = {
+        _eventname : "ERoll";
+        winAmount  : winAmount;
+        entropy    : nrem;
+        rol        : rol
+    };
+    msgs = one_msg msg;
+    event e;
+    send msgs
+end
+
+transition ReturnFund ()
+    blk <- _balance;
+    is_owner = builtin eq owner _sender;
+    
+    match is_owner with
+    | True =>
+        msg = {
+            _tag       : "ReturnFund";
+            _recipient : _sender;
+            _amount    : blk
+        };
+        msgs = one_msg msg;
+        send msgs
+    | False =>
+        msg = {
+            _tag       : "ReturnFund";
+            _recipient : _sender;
+            _amount    : Uint128 0;
+            code       : "is not owener"
+        };
+        msgs = one_msg msg;
+        send msgs
+    end
+end

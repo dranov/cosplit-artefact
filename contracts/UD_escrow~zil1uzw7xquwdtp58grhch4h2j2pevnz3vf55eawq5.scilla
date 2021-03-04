@@ -1,0 +1,113 @@
+
+scilla_version 0
+import BoolUtils
+library EscrowLib
+let nilMessage = Nil {Message}
+let nullByStr20 = 0x0000000000000000000000000000000000000000
+let true = True
+let false = False
+let oneMsg =
+fun(msg: Message) =>
+Cons {Message} msg nilMessage
+let eError = {_eventname: "Error"}
+let eDeposit = {_eventname: "Deposit"}
+let eSuccess = {_eventname: "Success"}
+contract Escrow(
+registry: ByStr20,
+seller: ByStr20,
+buyer: ByStr20,
+escrowedNode: ByStr32,
+price: Uint128
+)
+field id: String = "udc:escrow:1"
+field sold: Bool = False
+field deposit: Bool = False
+transition deposit()
+okAmount = builtin eq price _amount;
+okSender = builtin eq _sender buyer;
+hasDeposit <- deposit;
+isSold <- sold;
+ok =
+let okSold = negb isSold in
+let okDeposit = negb hasDeposit in
+let b1 = andb okSender okAmount in
+let b2 = andb okDeposit okSold in
+andb b1 b2;
+match ok with
+| True =>
+accept;
+deposit := true;
+event eDeposit
+| False => event eError
+end
+end
+transition execute()
+isSold <- sold;
+okDeposit <- deposit;
+ok =
+let okSold = negb isSold in
+andb okSold okDeposit;
+match ok with
+| True =>
+msgs =
+let m = {
+_tag: "transfer";
+_recipient: registry;
+_amount: Uint128 0;
+node: escrowedNode;
+owner: buyer
+} in oneMsg m;
+send msgs
+| False => event eError
+end
+end
+transition onTransferSuccess(node: ByStr32, owner: ByStr20)
+okSender = builtin eq _sender registry;
+match okSender with
+| True =>
+sold := true;
+event eSuccess;
+balance <- _balance;
+msgs = let m = {_tag: ""; _recipient: seller; _amount: balance} in oneMsg m;
+send msgs
+| False => event eError
+end
+end
+transition onTransferFailure(node: ByStr32, owner: ByStr20)
+okSender = builtin eq _sender registry;
+match okSender with
+| True =>
+deposit := true;
+balance <- _balance;
+msgs = let m = {_tag: ""; _recipient: buyer; _amount: balance} in oneMsg m;
+send msgs
+| False => event eError
+end
+end
+transition withdrawDomain()
+okSender = builtin eq _sender seller;
+match okSender with
+| True =>
+msgs =
+let m = {
+_tag: "transfer";
+_recipient: registry;
+_amount: Uint128 0;
+node: escrowedNode;
+owner: seller
+} in oneMsg m;
+send msgs
+| False => event eError
+end
+end
+transition withdrawZillings()
+okSender = builtin eq _sender buyer;
+match okSender with
+| True =>
+deposit := false;
+balance <- _balance;
+msgs = let m = {_tag: ""; _recipient: buyer; _amount: balance} in oneMsg m;
+send msgs
+| False => event eError
+end
+end

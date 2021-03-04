@@ -1,0 +1,275 @@
+scilla_version 0
+
+import BoolUtils
+
+library DinoMightyLand
+
+type DinoStats =
+| DinoStats of Uint32 Uint32 Uint32 Uint32 Uint32
+
+type DinoClassification =
+| DinoClassification of Uint32 DinoStats
+
+type ClassificationUnits =
+| ClassificationUnits of Uint32 Uint32 Uint32 Uint32
+
+let zero = Uint32 0
+let zero_classification_units = ClassificationUnits zero zero zero zero
+let get_classification_units =
+  fun (cid: Uint32) =>
+    let mask8 = Uint32 256 in
+
+    let d1 = builtin div cid mask8 in
+    let genus = builtin rem cid mask8 in
+    let d2 = builtin div d1 mask8 in
+    let family = builtin rem d1 mask8 in
+    let order = builtin rem d2 mask8 in
+    let class = builtin div d2 mask8 in
+    ClassificationUnits class order family genus
+    
+let is_valid_class_stats =
+  fun (cid: Uint32) =>
+  fun (ds: DinoStats) =>
+    match ds with
+    | DinoStats hp atk def spd luk =>
+      let xs0 = builtin mul hp atk in
+      let xs1 = builtin mul xs0 def in
+      let xs = builtin mul xs1 spd in
+      let mxs = Uint32 50 in
+      let vxs = builtin lt mxs xs in
+      match vxs with
+      | False => False
+      | True =>
+        let ts0 = builtin add hp atk in
+        let ts1 = builtin add ts0 def in
+        let ts = builtin add ts1 spd in
+        let cu = get_classification_units cid in
+        match cu with
+        | ClassificationUnits c o f g =>
+          let two = Uint32 2 in
+          let ms0 = builtin div c two in
+          let ms1 = builtin add ms0 o in
+          let ms2 = builtin add ms1 f in
+          let ms3 = builtin add ms2 g in
+          let st = Uint32 16 in
+          let ms = builtin add ms3 st in
+          let vts = builtin eq ts ms in
+          vts
+        end
+      end
+    end
+
+type DinoMighty =
+| DinoMighty of ByStr20 BNum Uint32 DinoStats
+
+type DinoBattleStats =
+| DinoBattleStatsNone
+| DinoBattleStats of Uint32 Uint32 DinoStats
+
+type DinoTeam =
+| DinoTeamNone
+| DinoTeamBattle of DinoBattleStats DinoBattleStats DinoBattleStats
+
+type BattleLabyrinth =
+| BattleLabyrinthNone
+| BattleLabyrinth of BNum BNum Uint256 Uint256 Uint256 Uint32 (Map Uint32 DinoTeam)
+
+let safe_to_uint32 =
+  fun (v: Uint256) =>
+    let u = builtin to_uint32 v in
+    match u with
+    | Some x => x
+    | None =>
+      Uint32 0
+    end
+
+let mask2bytes = Uint256 65536
+let mask1bytes = Uint256 256
+let mask4bytes = 0xffffffff
+let mask26bytes = 0x000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffff
+let invalid_classification_tag = Uint32 0
+let get_classification_from_genes =
+  fun (ver: Uint32) =>
+  fun (genes: Uint256) =>
+    let hdMask = builtin to_uint256 mask26bytes in
+    let hd = builtin div genes hdMask in
+    
+    let vsMask = builtin to_uint256 mask4bytes in
+    let vs = builtin div hd vsMask in
+    
+    let vs32 = safe_to_uint32 vs in
+    
+    let vl = builtin eq vs32 ver in
+    match vl with
+    | False => invalid_classification_tag
+    | True =>
+      let cl = builtin rem hd vsMask in
+      let cl32 = safe_to_uint32 cl in
+      cl32
+    end
+
+let extract_gens =
+  fun (rgenes: Pair (Uint256) (Uint32)) =>
+  fun (mask: Uint256) =>
+    match rgenes with
+    | Pair genes _ =>
+      let ne = builtin div genes mask in
+      let r = builtin rem genes mask in
+      let u = builtin to_uint32 r in
+      match u with
+      | Some v => Pair{Uint256 Uint32} ne v
+      | None =>
+        let zero = Uint32 0 in
+        Pair{Uint256 Uint32} ne zero
+      end
+    end
+
+let get_mutation_from_genes =
+  fun (genes: Uint256) =>
+    let zero = Uint32 0 in
+    let rgenes0 = Pair{Uint256 Uint32} genes zero in
+
+    let rgenes1 = extract_gens rgenes0 mask1bytes in
+    let rgenes2 = extract_gens rgenes1 mask1bytes in
+    let rgenes3 = extract_gens rgenes2 mask1bytes in
+    let rgenes4 = extract_gens rgenes3 mask1bytes in
+    let rgenes5 = extract_gens rgenes4 mask1bytes in
+   
+    match rgenes1 with
+    | Pair _ hp =>
+    match rgenes2 with
+    | Pair _ atk =>
+    match rgenes3 with
+    | Pair _ def =>
+    match rgenes4 with
+    | Pair _ spd =>
+    match rgenes5 with
+    | Pair _ luk =>
+      DinoStats hp atk def spd luk
+    end
+    end
+    end
+    end
+    end
+
+let create_dino =
+  fun (tokenOwner: ByStr20) =>
+  fun (bornBlock: BNum) =>
+  fun (classification: Option DinoClassification) =>
+  fun (mutation: DinoStats) =>
+    match classification with
+    | Some cl =>
+      match cl with
+      | DinoClassification tg _ =>
+        DinoMighty tokenOwner bornBlock tg mutation
+      end
+    | None =>
+      DinoMighty tokenOwner bornBlock invalid_classification_tag mutation
+    end
+
+type MyDino =
+| MyDino of Uint32 Uint32 Bool
+
+let fresh_my_dino =
+  let zero = Uint32 0 in
+  let b = False in
+  MyDino zero zero b
+
+let one_msg =
+ fun (msg : Message) =>
+ let nil_msg = Nil {Message} in
+Cons {Message} msg nil_msg
+
+let checkContractOwner =
+  fun (msgSender: ByStr20) =>
+  fun (owner: ByStr20) =>
+    builtin eq msgSender owner
+
+let makeErrorEvent =
+  fun (location: String) =>
+  fun (errorCode: Uint32) =>
+    {_eventname: "Error"; raisedAt: location; code: errorCode }
+
+let code_success = Uint32 0
+let code_failure = Uint32 1
+let code_not_authorized = Uint32 2
+let code_not_found = Uint32 4
+let code_bad_request = Uint32 5
+let code_token_exists = Uint32 6
+let code_product_exists = Uint32 7
+let code_invalid_quantity = Uint32 8
+let code_unexpected_error = Uint32 9
+let code_not_in_time = Uint32 10
+let code_invalid_classification_stats = Uint32 11
+
+let code_not_implement_error = Uint32 255
+
+let genes_version = Uint32 1
+
+contract DinoMightyLand
+(owner : ByStr20,
+  tokenAddr : ByStr20
+)
+
+field approvedByERC721: Bool = False
+
+field dinoMap: Map Uint256 DinoMighty = Emp Uint256 DinoMighty
+
+field ownedDinoMap: Map ByStr20 (Map Uint256 MyDino)  = Emp ByStr20 (Map Uint256 MyDino)
+field battleLabyrinthMap: Map ByStr20 BattleLabyrinth  = Emp ByStr20 BattleLabyrinth
+
+field classificationMap: Map Uint32 DinoClassification
+              = Emp Uint32 DinoClassification
+
+transition onERC721Received (from: ByStr20, tokenId: Uint256, genes: Uint256, bornBlock: BNum)
+
+  cid = get_classification_from_genes genes_version genes;
+  cl <- classificationMap[cid];
+  mt = get_mutation_from_genes genes;
+  dn = create_dino from bornBlock cl mt;
+  dinoMap[tokenId] := dn;
+
+  md = fresh_my_dino;
+  ownedDinoMap[from][tokenId] := md;
+
+  e = {_eventname : "onERC721Received successful"};
+  event e
+end
+
+transition onERC721StatusChanged (approved: Bool)
+  isAuthorized = checkContractOwner tokenAddr _sender;
+  match isAuthorized with
+  | True =>
+    approvedByERC721 := approved;
+
+    e = {_eventname : "onERC721StatusChanged successful"};
+    event e
+  | False =>
+    e = let raisedAt = "setContractHolder" in makeErrorEvent raisedAt code_not_authorized;
+    event e
+  end
+end
+
+transition newClassification (classId: Uint32, hp: Uint32, atk: Uint32, def: Uint32, spd: Uint32, luk: Uint32)
+  isAuthorized = checkContractOwner owner _sender;
+  match isAuthorized with
+  | True =>
+    ds = DinoStats hp atk def spd luk;
+    vl = is_valid_class_stats classId ds;
+
+    match vl with
+    | True =>
+      dc = DinoClassification classId ds;
+      classificationMap[classId] := dc;
+
+      e = {_eventname : "newClassification successful"};
+      event e
+    | False =>
+      e = let raisedAt = "newClassification" in makeErrorEvent raisedAt code_invalid_classification_stats;
+      event e
+    end
+  | False =>
+    e = let raisedAt = "newClassification" in makeErrorEvent raisedAt code_not_authorized;
+    event e
+  end
+end

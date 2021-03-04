@@ -1,0 +1,526 @@
+scilla_version 0
+
+(* HashedTimeLock contract *)
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library HashedTimeLock
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let not_owner_code = Int32 1
+let not_such_lockId = Int32 2
+let not_such_receiver = Int32 3
+let lock_has_refunded = Int32 4
+let lock_has_withdrawned = Int32 5
+let amount_invalid = Int32 6
+
+let zero_amount = Uint128 0
+
+let feeRataValid =
+    fun (feeRate : Uint128) =>
+        let maxRate = Uint128 1000000000000 in
+        builtin lt feeRate maxRate
+
+let feeCalculate1 =
+    fun (amount : Uint128) =>
+    fun (feeRate : Option Uint128) =>
+    match feeRate with
+    | None => Uint128 0
+    | Some feeRate =>
+        let maxRate = Uint128 1000000000000 in
+        let mid = builtin mul amount feeRate in
+            builtin div mid maxRate
+    end
+
+let feeCalculate2 =
+    fun (amount : Uint128) =>
+    fun (feeRate : Uint128) =>
+        let maxRate = Uint128 1000000000000 in
+        let mid = builtin mul amount feeRate in
+            builtin div mid maxRate
+
+let hashLockMatches =
+    fun (hValue : Option ByStr32) => fun (preimage : String) =>
+    match hValue with
+    | None => False
+    | Some hValue =>
+        let computeHValue1 = builtin sha256hash preimage in
+        let computeHValue2 = builtin sha256hash computeHValue1 in
+        builtin eq hValue computeHValue2
+    end
+
+let withdrawable =
+    fun (receiver : Option  ByStr20) =>
+    fun (nLockNum :  Option Uint128) =>
+    fun (currentBlock : BNum) =>
+    fun (sender : ByStr20) =>
+    fun (isSpecialAddress : Bool) =>
+    match receiver with
+    | None => False
+    | Some receiver =>
+        match nLockNum with
+        | None => False
+        | Some nLockNum =>
+            let zeroBNum = BNum 0 in
+            let lockNumBlock = builtin badd zeroBNum nLockNum in
+            let isWithdrawLocked = builtin blt currentBlock lockNumBlock  in
+            match isWithdrawLocked with
+            | False => False
+            | True =>
+                let isReiceiver = builtin eq receiver sender in
+                match isReiceiver with
+                | True => True
+                | False =>
+                    match isSpecialAddress with
+                    | True => True
+                    | False => False
+                    end
+                end
+            end
+        end
+    end
+
+let refundable =
+    fun (contractSender : Option ByStr20) =>
+    fun (nLockNum : Option Uint128) =>
+    fun (currentBlock : BNum) =>
+    fun (sender : ByStr20) =>
+    fun (isSpecialAddress : Bool) =>
+    match contractSender with
+    | None => False
+    | Some contractSender =>
+        match nLockNum with
+        | None => False
+        | Some nLockNum =>
+            let zeroBNum = BNum 0 in
+            let lockNumBlock = builtin badd zeroBNum nLockNum in
+            let isRefundLocked = builtin blt currentBlock lockNumBlock  in
+            match isRefundLocked with
+            | False => True
+            | True =>
+                let isSender = builtin eq contractSender sender in
+                match isSender with
+                | True => True
+                | False =>
+                    match isSpecialAddress with
+                    | True => True
+                    | False => False
+                    end
+                end
+            end
+        end
+    end
+
+let realBoolValue =
+   fun (boolValue : Option Bool) =>
+   match boolValue with
+   | None => False
+   | Some value =>
+      value
+   end
+
+let validLockNum =
+    fun (lockNum : Uint128) =>
+    fun (currentBlock : BNum) =>
+    let zeroBNum = BNum 0 in
+    let lockNumBlock = builtin badd zeroBNum lockNum in
+    builtin blt currentBlock lockNumBlock
+
+let refunded_illegal = Uint32 1
+let withdrawn_illegal = Uint32 2
+let lock_id_illegal = Uint32 3
+let amount_illegal = Uint32 4
+let receiver_illegal = Uint32 5
+let lock_num_illegal = Uint32 6
+let preimage_illegal = Uint32 7
+let lock_id_exist =  Uint32 8
+let sender_is_not_owner = Uint32 9
+let sender_is_not_admin = Uint32 10
+let feeRate_illegal = Uint32 11
+let sender_is_not_fee_address = Uint32 12
+let reicever_illegal = Uint32 13
+let sender_illegal = Uint32 14
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract HashedTimeLock
+(owner : ByStr20,
+feeRate : Uint128,
+feeAddress : ByStr20)
+
+
+field contractAdminAddress : ByStr20 = owner
+
+field contractFeeAddress : ByStr20 = feeAddress
+
+field contractFeeRate : Uint128 = feeRate
+
+field feeBalance : Uint128 = Uint128 0
+
+field specialFeeRate : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+field lockContractSender : Map ByStr32 ByStr20 = Emp ByStr32 ByStr20
+
+field lockContractReceiver : Map ByStr32 ByStr20 = Emp ByStr32 ByStr20
+
+field lockContractAmount : Map ByStr32 Uint128 = Emp ByStr32 Uint128
+
+field lockContractHValue : Map ByStr32 ByStr32 = Emp ByStr32 ByStr32
+
+field lockContractNLockNum : Map ByStr32 Uint128 = Emp ByStr32 Uint128
+
+field lockContractWithdrawn : Map ByStr32 Bool = Emp ByStr32 Bool
+
+field lockContractRefunded : Map ByStr32 Bool = Emp ByStr32 Bool
+
+field lockContractPreimage : Map ByStr32 String = Emp ByStr32 String
+
+(*Query the fee address*)
+transition getFeeAddress ()
+    r <- contractFeeAddress;
+    e = {_eventname: "getFeeAddress()"; feeAddress: r};
+    event e
+end
+
+(*Query the fee rate*)
+transition getFeeRate ()
+    r <- contractFeeRate;
+    e = {_eventname: "getFeeRate()"; feeRate: r};
+    event e
+end
+
+(*Query the special fee rate*)
+transition getSpecialFeeRate (specialAddress : ByStr20)
+    r <- specialFeeRate[specialAddress];
+    e = {_eventname: "getSpecialFeeRate()"; specialFeeRate: r};
+    event e
+end
+
+(*Update the special fee rate*)
+transition specialFeeRateUpdate(specialAddress : ByStr20 , feeRate : Uint128)
+    admin <- contractAdminAddress;
+    isAdmin = builtin eq admin _sender;
+    match isAdmin with
+    | True =>
+        isFeeRateValid = feeRataValid feeRate;
+        match isFeeRateValid with
+        | True =>
+            specialFeeRate[specialAddress] := feeRate;
+            e = { _eventname : "LogSpecialFeeRateUpdate"; specialAddress : specialAddress; feeRate : feeRate};
+            event e
+        | False =>
+            e = { _eventname : "error"; code : feeRate_illegal};
+            event e
+        end
+    | False =>
+        e = { _eventname : "error"; code : sender_is_not_admin};
+        event e
+    end
+end
+
+(*Change the fee address*)
+transition changeAdminAddress (adminAddress : ByStr20)
+    admin <- contractAdminAddress;
+    isAdmin = builtin eq admin _sender;
+    match isAdmin with
+    | True =>
+        contractAdminAddress := adminAddress;
+        e = { _eventname : "LogChangeAdminAddress"; adminAddress : adminAddress; owner : owner; sender : _sender};
+        event e
+    | False =>
+        e = { _eventname : "error"; code : sender_is_not_admin};
+        event e
+    end
+end
+
+(*Change the fee address*)
+transition changeFeeAddress (feeAddress : ByStr20)
+    admin <- contractAdminAddress;
+    isAdmin = builtin eq admin _sender;
+    match isAdmin with
+    | True =>
+        contractFeeAddress := feeAddress;
+        e = { _eventname : "LogChangeFeeAddress"; feeAddress : feeAddress};
+        event e
+    | False =>
+        e = { _eventname : "error"; code : sender_is_not_admin};
+        event e
+    end
+end
+
+(*Change the fee rate*)
+transition changeFeeRate (feeRate : Uint128)
+    admin <- contractAdminAddress;
+    isAdmin = builtin eq admin _sender;
+    match isAdmin with
+    | True =>
+        isFeeRateValid = feeRataValid feeRate;
+        match isFeeRateValid with
+        | True =>
+            contractFeeRate := feeRate;
+            e = { _eventname : "LogChangeFeeRate"; feeRate : feeRate};
+            event e
+        | False =>
+            e = { _eventname : "error"; code : feeRate_illegal};
+            event e
+        end
+    | False =>
+        e = { _eventname : "error"; code : sender_is_not_admin};
+        event e
+    end
+end
+
+transition newLock (receiver : ByStr20, hValue : ByStr32, nLockNum : Uint128)
+    isAmountValid = builtin lt zero_amount _amount;
+
+    currentBlock <- & BLOCKNUMBER;
+
+    isValidLockNum = validLockNum nLockNum currentBlock;
+
+    match isValidLockNum with
+    | True =>
+        match isAmountValid with
+        | True =>
+            accept;
+            senderStr = builtin to_string _sender;
+            nLockNumStr = builtin to_string nLockNum;
+            amountStr = builtin to_string _amount;
+            merge1 = builtin concat amountStr nLockNumStr;
+            merge2 = builtin concat receiver hValue;
+            merge2Str = builtin to_string merge2;
+            merge =  builtin concat merge2Str merge1;
+            final = builtin concat senderStr merge;
+            lockId = builtin sha256hash final;
+
+            isLockExist <- exists  lockContractSender[lockId];
+
+            match isLockExist with
+            | True =>
+                e = { _eventname : "error"; code : lock_id_exist};
+                event e
+            | False =>
+                lockContractSender[lockId] :=  _sender;
+                lockContractReceiver[lockId] := receiver;
+                lockContractAmount[lockId] :=  _amount;
+                lockContractHValue[lockId] := hValue;
+                lockContractNLockNum[lockId] := nLockNum;
+                isWithdrawn = False;
+                lockContractWithdrawn[lockId] := isWithdrawn;
+                isRefunded = False;
+                lockContractRefunded[lockId] := isRefunded;
+
+                e = { _eventname : "LogHTLCNew"; lockId : lockId; sender : _sender; receiver : receiver; amount : _amount; hValue : hValue;  nLockNum: nLockNum};
+                event e;
+
+                msg = {_tag : ""; _recipient : _sender; _amount : Uint128 0};
+                msgs = one_msg msg;
+                send msgs
+            end
+        | False =>
+            e = { _eventname : "error"; code : amount_illegal};
+            event e
+        end
+    | False =>
+        e = { _eventname : "error"; code : lock_num_illegal};
+        event e
+    end
+end
+
+transition withdraw (lockId : ByStr32, preimage : String)
+    currentBlock <- & BLOCKNUMBER;
+    isLockExist <- exists lockContractSender[lockId];
+    match isLockExist with
+    | True =>
+        isSpecialFeeRateExist <- exists specialFeeRate[_sender];
+	    receiver <- lockContractReceiver[lockId];
+        nLockNum <- lockContractNLockNum[lockId];
+        isWithdrawable = withdrawable receiver nLockNum currentBlock _sender isSpecialFeeRateExist;
+        match isWithdrawable with
+        | True =>
+	        hValue <- lockContractHValue[lockId];
+            isHashlockMatches = hashLockMatches hValue preimage;
+            match isHashlockMatches with
+            | True =>
+                refunded <- lockContractRefunded[lockId];
+		        boolValue = realBoolValue refunded;
+                match boolValue with
+                | False =>
+                    isWithdrawn <- lockContractWithdrawn[lockId];
+           	        boolValue = realBoolValue isWithdrawn;
+                    match boolValue with
+                    | False =>
+                        isWithdrawn = True;
+			            lockContractWithdrawn[lockId] := isWithdrawn;
+                        lockContractPreimage[lockId] := preimage;
+                        amount <- lockContractAmount[lockId];
+                        match amount with
+                        | Some amount =>
+                            delete lockContractSender[lockId];
+                            delete lockContractReceiver[lockId];
+                            delete lockContractAmount[lockId];
+                            delete lockContractHValue[lockId];
+                            delete lockContractNLockNum[lockId];
+                            delete lockContractWithdrawn[lockId];
+                            delete lockContractRefunded[lockId];
+                            delete lockContractPreimage[lockId];
+                            match receiver with
+                            | Some receiver =>
+                                (*calculate the fee*)
+                                isSpecialFeeRateExist <- exists specialFeeRate[_sender];
+                                match isSpecialFeeRateExist with
+                                | True =>
+                                    feeRate <- specialFeeRate[_sender];
+                                    fee = feeCalculate1 amount feeRate;
+                                    previousBalance <- feeBalance;
+                                    currentBalance = builtin add previousBalance fee;
+                                    feeBalance := currentBalance;
+                                    (*withdraw transaction*)
+                                    restAmount = builtin sub amount fee;
+                                    e = { _eventname : "LogHTLCWithdraw"; lockId : lockId; preimage : preimage; receiver : receiver; amount : restAmount};
+                                    event e;
+                                    msg = {_tag : ""; _recipient : receiver; _amount : restAmount};
+                                    msgs = one_msg msg;
+                                    send msgs
+                                | False =>
+                                    feeRate <- contractFeeRate;
+                                    fee = feeCalculate2 amount feeRate;
+                                    previousBalance <- feeBalance;
+                                    currentBalance = builtin add previousBalance fee;
+                                    feeBalance := currentBalance;
+    
+                                    (*withdraw transaction*)
+                                    restAmount = builtin sub amount fee;
+                                    e = { _eventname : "LogHTLCWithdraw"; lockId : lockId; preimage : preimage; receiver : receiver; amount : restAmount};
+                                    event e;
+                                    msg = {_tag : ""; _recipient : receiver; _amount : restAmount};
+                                    msgs = one_msg msg;
+                                    send msgs
+                                end
+                            | None =>
+                                e = { _eventname : "error"; code : reicever_illegal};
+                                event e
+                            end  
+                        | None =>
+                            e = { _eventname : "error"; code : amount_illegal};
+                            event e
+                        end
+                    | True =>
+                        e = { _eventname : "error"; code : withdrawn_illegal};
+                        event e
+                    end
+                | True =>
+                    e = { _eventname : "error"; code : refunded_illegal};
+                    event e
+                end
+            | False =>
+                computeHValue1 = builtin sha256hash preimage;
+                computeHValue2 = builtin sha256hash computeHValue1;
+                e = { _eventname : "error1"; code : lock_id_illegal; computeHValue : computeHValue2};
+                event e
+            end
+        | False =>
+            e = { _eventname : "error"; code : lock_num_illegal};
+            event e
+        end
+    | False =>
+        e = { _eventname : "error"; code : lock_id_illegal};
+        event e
+    end
+end
+
+transition refund (lockId : ByStr32)
+
+    currentBlock <- & BLOCKNUMBER;
+
+    isLockExist <- exists lockContractSender[lockId];
+    match isLockExist with
+    | True =>
+        isSpecialFeeRateExist <- exists specialFeeRate[_sender];
+        contractSender <- lockContractSender[lockId];
+        nLockNum   <- lockContractNLockNum[lockId];
+        isRefundable = refundable contractSender nLockNum currentBlock _sender isSpecialFeeRateExist;
+        match isRefundable with
+        | True =>
+            isRefunded <- lockContractRefunded[lockId];
+	        boolValue = realBoolValue isRefunded;
+            match boolValue with
+            | False =>
+		        isWithdrawn <- lockContractWithdrawn[lockId];
+		        boolValue = realBoolValue isWithdrawn;
+                match boolValue with
+                | False =>
+                    isRefunded = True;
+                    lockContractRefunded[lockId] := isRefunded;
+                    amount <- lockContractAmount[lockId];
+                    match amount with
+                    | Some amount =>
+                        delete lockContractSender[lockId];
+                        delete lockContractReceiver[lockId];
+                        delete lockContractAmount[lockId];
+                        delete lockContractHValue[lockId];
+                        delete lockContractNLockNum[lockId];
+                        delete lockContractWithdrawn[lockId];
+                        delete lockContractRefunded[lockId];
+                        delete lockContractPreimage[lockId];
+                        match contractSender with
+                        | Some contractSender =>
+                            e = { _eventname : "LogHTLCRefund"; lockId : lockId; receiver : contractSender; amount : amount};
+                            event e;
+                            msg = {_tag : ""; _recipient : contractSender; _amount : amount};
+                            msgs = one_msg msg;
+                        send msgs
+                        | None =>
+                            e = { _eventname : "error"; code : sender_illegal};
+                            event e
+                        end
+                    | None =>
+                        e = { _eventname : "error"; code : amount_illegal};
+                        event e
+                    end
+                | True =>
+                    e = { _eventname : "error"; code :  withdrawn_illegal};
+                    event e
+                end
+            | True =>
+                e = { _eventname : "error"; code : refunded_illegal};
+                event e
+            end
+        | False =>
+             e = { _eventname : "error"; code : lock_num_illegal};
+             event e
+        end
+    | False =>
+        e = { _eventname : "error"; code : lock_id_illegal};
+        event e
+    end
+end
+
+(*Withdraw all the fee to the fee address*)
+transition feeWithdraw ()
+    feeAddress <- contractFeeAddress;
+    isFeeAddress = builtin eq feeAddress _sender;
+    match isFeeAddress with
+        | True =>
+            currentFee <- feeBalance;
+            zero = Uint128 0;
+            feeBalance := zero;
+
+            e = { _eventname : "LogFeeWithdraw"; currentFee : currentFee};
+            event e;
+
+            msg = {_tag : ""; _recipient : _sender; _amount : currentFee};
+            msgs = one_msg msg;
+            send msgs
+        | False =>
+            e = { _eventname : "error"; code : sender_is_not_fee_address};
+            event e
+    end
+end

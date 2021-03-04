@@ -1,0 +1,111 @@
+scilla_version 0
+(* BoltAnalytics contract *)
+
+import BoolUtils
+
+library BoltAnalytics
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let one = Uint64 1
+let zero = Uint64 0
+let video_exists_code = Uint64 1
+let video_not_exists_code = Uint64 2
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+(*owner is the owner of this contract *)
+(*maximum number of videos to be monitored, recommended to be set to 1k*)
+
+contract BoltAnalytics
+(owner       : ByStr20,
+ max_videos  : Uint64)
+
+(*Each video is identified by a hash of type ByStr32 *)
+(*Its creator is identified using an address of type ByStr20 *)
+field videos : Map ByStr32 ByStr20 = Emp ByStr32 ByStr20 
+
+(* Number of videos *)
+field nb_videos : Uint64 = Uint64 0
+
+(* Number of views received on each video *)
+field views : Map ByStr32 Uint64 = Emp ByStr32 Uint64 
+
+transition getVideoInfo(videoID : ByStr32)
+    creator <- videos[videoID];
+    match creator with
+    | Some v1 =>
+      nbViews <- views[videoID];
+      match nbViews with 
+      | Some v2 =>
+        msg  = {_tag : "processReward"; _recipient : _sender; _amount : Uint128 0; 
+                creator_id : v1; nb_views : v2};
+        msgs = one_msg msg;
+       send msgs
+      | None =>
+      end 
+    | None =>
+    end    
+end
+
+transition getNbViews(videoID : ByStr32)
+    nbViews <- views[videoID];
+    match nbViews with 
+    | Some v =>
+      msg  = {_tag : "processNbViews"; _recipient : _sender; _amount : Uint128 0; 
+              value : v};
+      msgs = one_msg msg;
+      send msgs
+    | None =>
+    end
+end
+
+(* Add a new video to the map *)
+transition addVideo (videoID : ByStr32, creator : ByStr20)
+  is_owner = builtin eq owner _sender;
+  not_owner =  negb is_owner;
+  current_nb_videos <- nb_videos; 
+  isMaxLimit = builtin lt max_videos current_nb_videos;
+  isPresent <- exists videos[videoID];
+  res_1 = orb isMaxLimit isPresent;
+  res = orb res_1 not_owner;
+  match res with
+  | False =>
+    videos[videoID]:= creator;
+    views[videoID]:= zero;
+    tmp = builtin add current_nb_videos one;
+    nb_videos:=tmp;
+    e = {_eventname : "addVideoSuccess"; creator : _sender; videoID : videoID};
+    event e
+  | True =>
+    e = {_eventname : "addVideoFailure"};
+    event e
+  end
+end
+
+(* Add view impressions for a video *)
+transition addViewImpress (videoID : ByStr32, nb_impress : Uint64)
+  is_owner  = builtin eq owner _sender;
+  isPresent <- exists videos[videoID];
+  res = andb is_owner isPresent;
+  match res with
+  | True =>
+    current_impress <- views[videoID];
+    match current_impress with
+    | Some v => 
+      new_impress = builtin add v nb_impress;
+      views[videoID] := new_impress;
+      e = {_eventname : "addViewSuccess"; video : videoID; impresssions : new_impress};
+      event e    
+    | _ =>
+    end     
+  | False =>
+    e = {_eventname : "addViewFailure"; code : video_not_exists_code};
+    event e
+  end
+end

@@ -1,0 +1,494 @@
+scilla_version 0
+
+import BoolUtils IntUtils ListUtils
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library OTS200
+
+(* Standard Enums *)
+let zero = Uint128 0
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+
+(* Checks if the the transfer is allowed *)
+(* Recipient must be in the whitelist *)
+let check_transfer_allowed =
+  fun (recipient_whitelist: Option String) =>
+  fun (owner_address: ByStr20) =>
+  fun (recipient: ByStr20) =>
+    match recipient_whitelist with
+    | Some inlist => True
+    | None =>
+      let recipient_is_contract_owner = builtin eq owner_address recipient in
+      match recipient_is_contract_owner with
+      | True => True
+      | False => False
+      end
+    end
+
+let check_allowance =
+  fun (allowed_tokens : Option Uint128) =>
+  fun (tokens : Uint128) =>
+    match allowed_tokens with
+    | Some v =>
+      let sufficient_tokens = uint128_le tokens v in
+      match sufficient_tokens with
+      | True => True
+      | False => False
+      end
+    | None => False
+    end
+
+(* Get Recipient's new balance after transfer has succeeded *)
+let get_recipient_new_balance =
+  fun (current_balance: Option Uint128) =>
+  fun (tokens : Uint128) =>
+    match current_balance with
+    | Some bal => builtin add tokens bal
+    | None => tokens
+    end
+
+(* Generic error events wrapper *)
+let make_event_error=
+  fun (label: String) =>
+  fun ( msg: String) =>
+    { _eventname : "Error"; label : label ; message: msg }
+
+
+(* Event for generic messages *)
+let make_event_success =
+  fun (label: String) =>
+  fun ( msg: String) =>
+    { _eventname : "Success"; label : label ; message: msg }
+
+
+let make_member_map =
+  fun (new_members : List (Pair (ByStr20) (String))) =>
+  fun (existing_map : Map ByStr20 String) =>
+    let iterator =
+      fun (accumulator : Map ByStr20 String) =>
+      fun (current_pair : Pair (ByStr20) (String)) =>
+        match current_pair with
+        | Pair current_member current_name =>
+          builtin put accumulator current_member current_name
+        end 
+      in
+      let folder = @list_foldl (Pair (ByStr20) (String)) (Map ByStr20 String) in
+      folder iterator existing_map new_members
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+(* During the initiatlisation, a restricted fungible will have the following properties *)
+(* @param: limit { Option Uint32 } = a hard limit on the number of investors *)
+(* @param: decimal: Uint32 - the number of decimal placings represented.     *)
+contract OTS200
+(
+ initial_tokens: Uint128,
+ token_name: String,
+ token_symbol: String,
+ hard_cap: Option Uint32,
+ share_company : String,
+ share_seller_profile: String,
+ share_type : String,
+ share_structure : String,
+ organisation_id: Uint32,
+ custodian_address: ByStr20,
+ initial_shareholder: ByStr20,
+ conversion_ratio: Uint32)
+
+(* Initial balance is not stated explicitly: it's initialized when creating the contract. *)
+
+field token_balances : Map ByStr20 Uint128 =
+  let m = Emp ByStr20 Uint128 in
+    builtin put m initial_shareholder initial_tokens
+field token_allowances: Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+(* Whitelist participants *)
+(* Mapping from the user address to the timestamp where he is added *)
+field registry : Map ByStr20 String = Emp ByStr20 String
+field number_of_members: Uint32 = Uint32 0
+field total_tokens : Uint128 = initial_tokens
+
+
+transition Burn(burn_address: ByStr20, burn_tokens: Uint128)
+  check_owner = builtin eq custodian_address _sender;
+  (* only custodians or token owner can burn tokens *)
+  match check_owner with
+  | True =>
+    get_bal <- token_balances[burn_address];
+    match get_bal with
+    | Some b =>
+      check_balance = builtin lt b burn_tokens;
+      match check_balance with
+      | True =>
+        e = let label = "Burn" in
+              let msg = "Insufficient balance" in
+            make_event_error label msg;
+        event e
+      | False => 
+
+        (* Valid operation *)
+        new_balance = builtin sub b burn_tokens; 
+        token_balances[burn_address] := new_balance;
+        
+        (* New total number of tokens *)
+        total <- total_tokens;
+        total_tokens = let new_total = builtin sub total burn_tokens in new_total;
+        e = {
+              _eventname : "BurnSuccess";
+              address : burn_address;
+              tokens_burned : burn_tokens;
+              new_total_tokens: total_tokens
+            };
+        event e
+      end
+    | None =>
+      e = let label = "Burn" in
+            let msg = "Balance not found" in
+          make_event_error label msg;
+      event e
+    end
+  | False =>
+    e = let label = "Burn" in
+          let msg = "Unauthorised" in
+        make_event_error label msg;
+    event e
+  end
+end
+
+
+transition Mint(address: ByStr20, num_tokens: Uint128)
+  check_owner = builtin eq _sender custodian_address;
+  match check_owner with
+  | True =>
+    (* Only custodian can mint tokens and add it to the initial shareholder *)
+    is_whitelisted <- registry[address];
+    check_transfer = check_transfer_allowed is_whitelisted custodian_address address;
+    match check_transfer with
+    | True => 
+      get_balance <- token_balances[address];
+      current_balance = match get_balance with
+      | Some bal => bal
+      | None => Uint128 0
+      end;
+      new_balance = builtin add current_balance num_tokens;
+      token_balances[address] := new_balance;
+      e = {_eventname: "MintSuccess";
+          address: address;
+          tokens: num_tokens;
+          recipient_new_balance: new_balance};
+      event e
+
+    | False => 
+      e = let label = "Mint" in
+            let msg = "Unpermitted Operation" in
+          make_event_error label msg;
+      event e
+    end
+
+  | False =>
+    e = let label = "Mint" in
+          let msg = "Unauthorised" in
+        make_event_error label msg;
+    event e
+  end
+end
+
+transition BulkUpdateMember(member_list : List ByStr20, datetime_added : List String)
+  (* Check if the length of the list exceeds the maximum number of members *)
+  l1 = let list_length_bystr20 = @list_length ByStr20 in
+          list_length_bystr20 member_list;
+  l2 = let list_length_string = @list_length String in
+          list_length_string datetime_added;
+  is_length_equal = builtin eq l1 l2;
+  match is_length_equal with
+  | True =>
+    (* Both length of the lists are equal *)
+    match hard_cap with
+    | Some limit => 
+      current_num <- number_of_members;
+      check_length = let a = builtin add l1 current_num in
+                    uint32_le a limit
+    | None =>
+      (* No limit, proceed to add the items *)
+    end;
+    list_pair = let zip = @list_zip ByStr20 String in
+                zip member_list datetime_added;
+    current_registry <- registry;
+    new_map = make_member_map list_pair current_registry;
+    registry := new_map;
+    e = let label = "BulkUpdateMember" in
+          let msg = "Success" in
+        make_event_success label msg;
+    event e
+  | False => 
+    e = let label = "BulkUpdateMember" in
+          let msg = "List length must be the same" in
+        make_event_error label msg;
+    event e
+  end
+end
+
+transition AddMember(member_address: ByStr20, datetime_added: String)
+  checkOwner = builtin eq _sender custodian_address;
+  match checkOwner with
+  | True =>
+    (* Check hardcap limit *)
+    current_num <- number_of_members;
+    match hard_cap with
+    | Some limit =>
+       (* Checks if investor limit has been reached *)
+      number_below_limit = uint32_le current_num limit;
+      match number_below_limit with
+      | True =>
+         (* Proceed with adding member to the whitelist *)
+        registry[member_address] := datetime_added;
+        new_number = let one = Uint32 1 in
+                     builtin add one current_num;
+        number_of_members := new_number;
+        e = let label = "AddMember" in
+          let msg = "Success" in
+          make_event_success label msg;
+        event e
+      |False =>
+        e = let label = "AddMember" in
+          let msg = "Limit reached" in
+        make_event_error label msg;
+        event e
+      end
+    | None =>
+      registry[member_address] := datetime_added;
+      new_number = let one = Uint32 1 in
+                   builtin add one current_num;
+      number_of_members := new_number;
+      e = let label = "AddMember" in
+        let msg = "Success" in
+        make_event_success label msg;
+      event e
+    end
+  | False =>
+    e = let label = "AddMember" in
+      let msg = "Unauthorized" in
+      make_event_error label msg;
+    event e
+  end
+end
+
+transition UpdateMember(member_address: ByStr20, member_name: String)
+  check_owner = builtin eq _sender custodian_address;
+
+  match check_owner with
+  | True =>
+    (* Get member from the records *)
+    get_member <- registry[member_address];
+    match get_member with
+    | Some member =>
+      registry[member_address] := member_name;
+      e = let label = "UpdateMember" in
+        let msg = "Success" in
+        make_event_success label msg;
+      event e
+    | None =>
+     end
+  | False =>
+    e = let label = "UpdateMember" in
+      let msg = "Unauthorized" in
+      make_event_error label msg;
+    event e
+  end
+end
+
+(* Removes a member from the whitelist *)
+transition RemoveMember(member_address: ByStr20)
+
+  check_owner = builtin eq _sender custodian_address;
+  match check_owner with
+  | True =>
+    get_member <- registry[member_address];
+    match get_member with
+    | Some value =>
+      (* clear existing allowance field if any *)
+      delete token_allowances[member_address];
+
+      (* Refunds the existing token to the custodian_address *)
+      get_existing_balance <- token_balances[member_address];
+      match get_existing_balance with
+      | Some existing_balance =>
+        get_issuer_balance <- token_balances[custodian_address];
+        new_balance = get_recipient_new_balance get_issuer_balance existing_balance;
+        token_balances[custodian_address] := new_balance
+      | None =>
+        (* Member does not have any balance *)
+      end;
+
+      delete token_balances[member_address];
+      delete registry[member_address];
+      e = let label = "RemoveMember" in
+        let msg = "Success" in
+        make_event_success label msg;
+      event e;
+      current_num <- number_of_members;
+      new_num = let one = Uint32 1 in builtin sub current_num one;
+      number_of_members := new_num
+    | None =>
+      e = let label = "RemoveMember" in
+        let msg = "Member does not exist" in
+        make_event_error label msg;
+      event e
+    end
+  | False =>
+    e = let label = "RemoveMember" in
+      let msg = "Unauthorized" in
+      make_event_error label msg;
+    event e
+  end
+end
+
+transition BalanceOf (token_owner: ByStr20)
+  bal <- token_balances[token_owner];
+  match bal with
+  | Some v =>
+	e = {_eventname : "BalanceOf"; address : token_owner; balance : v};
+	event e
+  | None =>
+	e = {_eventname : "BalanceOf"; address : token_owner ; balance : Uint128 0};
+    event e
+  end
+end
+
+transition TotalSupply ()
+  e = {_eventname : "TotalSupply"; caller : _sender; balance : initial_tokens};
+  event e
+end
+
+transition TransferFrom (from : ByStr20, to : ByStr20, tokens : Uint128)
+  get_current_balance <- token_balances[from];
+
+  (* Tokens can only be transferred to a recipient who is whitelisted or contract owner *)
+  is_whitelisted <- registry[to];
+  check_transfer = check_transfer_allowed is_whitelisted custodian_address to;
+  match check_transfer with
+  | True =>
+    (* Checks if `from` has sufficient tokens *)
+    match get_current_balance with
+    | Some balance =>
+        sufficient_balance = uint128_le tokens balance;
+        match sufficient_balance with
+        | True =>
+          (* Checks if _sender is an entity that is approved by the owner *)
+          is_sender_owner = builtin eq _sender from;
+          match is_sender_owner with
+          | False =>
+            (* _sender is not owner. Check if he has sufficient allowance *)
+            get_allowance <- token_allowances[from][_sender];
+            transfer_allowed  = check_allowance get_allowance tokens;
+            match transfer_allowed with
+            | True =>
+              (* Deducts the tokens from allowance *)
+              match get_allowance with
+              | Some current_allowance =>
+                new_allowance = builtin sub current_allowance tokens;
+                token_allowances[from][_sender] := new_allowance
+              | None => (* Should not happen due to "check_allowance" library *)
+              end;
+
+              (* Deduct balance from `from` *)
+              new_balance = builtin sub balance tokens;
+              token_balances[from] := new_balance;
+
+              (* Update recipient balance *)
+              recipient_current_balance <- token_balances[to];
+              new_balance = get_recipient_new_balance recipient_current_balance tokens;
+              token_balances[to] := new_balance;
+
+              (* Emits success message *)
+              e = {_eventname: "TransferFromApprovedSuccess"; 
+                    sender: _sender; 
+                    from : from; 
+                    to: to; 
+                    tokens: tokens};
+              event e
+
+            | False =>
+              e = let label = "TransferFrom" in
+                let msg = "Insufficient allowance or not authorized" in
+                make_event_error label msg;
+              event e
+            end
+          | True =>
+            (* Deduct balance from `from` *)
+            new_balance = builtin sub balance tokens;
+            token_balances[from] := new_balance;
+
+            (* Update recipient balance *)
+            recipient_current_balance <- token_balances[to];
+            new_balance = get_recipient_new_balance recipient_current_balance tokens;
+            token_balances[to] := new_balance;
+
+            (* Emits success message *)
+            e = {_eventname: "TransferFromOwnerSuccess"; from : from; to: to; tokens: tokens};
+            event e
+
+          end
+
+        | False =>
+          e = let label = "TransferFrom" in
+            let msg = "Insufficient Balance" in
+            make_event_error label msg;
+          event e
+        end
+    | None =>
+        e = let label = "TransferFrom" in
+          let msg = "Insufficient Balance" in
+          make_event_error label msg;
+        event e
+    end
+
+  | False =>
+    e = let label = "TransferFrom" in
+      let msg = "Failure: Transfer not allowed" in
+      make_event_error label msg;
+    event e
+  end
+end
+
+transition Approve (spender : ByStr20, value: Uint128)
+  (* Checks if the `spender` is whitelisted *)
+  is_whitelisted <- registry[spender];
+  check_transfer = check_transfer_allowed is_whitelisted custodian_address spender;
+  match check_transfer with
+  | True =>
+    (* Use the value from the parameter even if the existing spender already has some allowance *)
+    token_allowances[_sender][spender] := value;
+    e = {_eventname : "ApproveSuccess"; approver : _sender; spender : spender; amount : value};
+    event e
+  | False =>
+    e = let label = "Approve" in
+      let msg = "Spender is not whitelisted" in
+      make_event_error label msg;
+    event e
+  end
+end
+
+transition Allowance (token_owner: ByStr20, spender : ByStr20)
+  spender_allowance <- token_allowances[token_owner][spender];
+  match spender_allowance with
+  | Some n =>
+      e = {_eventname : "Allowance"; owner : token_owner; spender : spender; amount : n};
+      event e
+  | None =>
+      e = {_eventname : "Allowance"; owner : token_owner; spender : spender; amount : Uint128 0};
+      event e
+  end
+end

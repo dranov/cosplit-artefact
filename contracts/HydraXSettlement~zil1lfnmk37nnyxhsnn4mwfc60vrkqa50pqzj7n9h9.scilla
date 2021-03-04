@@ -1,0 +1,198 @@
+scilla_version 0
+
+import IntUtils
+
+library HydraXSettlement
+
+
+(* Variables related to Update Balances *)
+let get_balance_token = "GetBalance"
+let transfer_token = "TransferToken"
+
+(* Variables related to Release TX *)
+let start_release = "StartRelease"
+let rl_handle_transfer_token_1 = "rlHandleTransferToken1"
+let rl_handle_transfer_token_2 = "rlHandleTransferToken2"
+
+(* Variables related to Refund TX *)
+let start_refund = "StartRefund"
+let rf_handle_transfer_token_1 = "rfHandleTransferToken1"
+let rf_handle_transfer_token_2 = "rfHandleTransferToken2"
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+    
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract HydraXSettlement
+( owner : ByStr20,
+  addr_token1 : ByStr20,
+  addr_token2 : ByStr20,
+  amt1: Uint128,
+  amt2: Uint128,
+  receive_addr1: ByStr20,
+  receive_addr2: ByStr20)
+
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+
+(*******************************************************************************)
+(*********************          Update Balances           **********************)
+(*******************************************************************************)
+
+procedure UpdateBalance(tag: String, recipient: ByStr20, callback: String)
+    msg  = {_tag : tag; _recipient : recipient; _amount : Uint128 0; callback: callback };
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition HandleBalanceToken1(bal_token_1 : Uint128, callback: String)
+    balances[_sender] := bal_token_1;
+    UpdateBalance get_balance_token addr_token2 callback
+end
+
+transition HandleBalanceToken2(bal_token_2 : Uint128, callback: String)
+    balances[_sender] := bal_token_2;
+    msg  = {_tag : callback; _recipient : _this_address; _amount : Uint128 0};
+    msgs = one_msg msg;
+    send msgs
+end
+
+
+(*******************************************************************************)
+(*********************          Transfer token            **********************)
+(*******************************************************************************)
+
+procedure TransferToken(tag : String, recipient : ByStr20, from: ByStr20, to: ByStr20, amt: Uint128, callback: String)
+    msg  = {_tag : tag; _recipient : recipient; _amount : Uint128 0; from: from; to: to; tokens: amt; callback: callback};
+    msgs = one_msg msg;
+    send msgs
+end
+
+(*******************************************************************************)
+(*******************************************************************************)
+(*********************          Release                   **********************)
+(*******************************************************************************)
+(*******************************************************************************)
+
+transition ReleaseFunds () 
+    is_owner = builtin eq owner _sender;
+    match is_owner with
+    | False =>
+        e = {_eventname : "RefundTokenFailure"; from_contract : _this_address; error: "Invalid sender"}; 
+        event e
+    | True =>
+        UpdateBalance get_balance_token addr_token1 start_release
+    end
+end
+
+transition StartRelease() 
+    balance_token1 <- balances[addr_token1];
+    match balance_token1 with  
+    | None =>
+        e = {_eventname : "NoBalanceForToken1"; from_contract : _this_address}; 
+        event e
+    | Some val =>
+        balance_token1_ok = uint128_ge val amt1;
+        match balance_token1_ok with
+        | True =>
+            balance_token2 <- balances[addr_token2];
+            match balance_token2 with
+            | None =>
+                e = {_eventname : "NoBalanceForToken2"; from_contract : _this_address}; 
+                event e
+            | Some val =>
+                balance_token2_ok = uint128_ge val amt2;
+                match balance_token2_ok with
+                | True =>
+                    TransferToken transfer_token addr_token1 _this_address receive_addr1 amt1 rl_handle_transfer_token_1
+                | False =>
+                    e = {_eventname : "InvalidBalanceToken2"; from_contract : _this_address}; 
+                    event e
+                end
+            end
+        | False =>
+            e = {_eventname : "InvalidBalanceToken1"; from_contract : _this_address}; 
+            event e
+        end
+    end
+end
+
+transition rlHandleTransferToken1() 
+  TransferToken transfer_token addr_token2 _this_address receive_addr2 amt2 rl_handle_transfer_token_2
+end 
+
+transition rlHandleTransferToken2()
+    e = {_eventname : "ReleaseFundsCompleted"; from_contract : _this_address}; 
+    event e
+end
+
+
+(*******************************************************************************)
+(*******************************************************************************)
+(*********************          Refund                   ***********************)
+(*******************************************************************************)
+(*******************************************************************************)
+
+transition RefundTokens() 
+    is_owner = builtin eq owner _sender;
+    match is_owner with
+    | False =>
+        e = {_eventname : "RefundTokenFailure"; from_contract : _this_address; error: "Invalid sender"}; 
+        event e
+    | True =>
+        UpdateBalance get_balance_token addr_token1 start_refund
+    end
+end
+
+transition StartRefund() 
+    is_owner = builtin eq owner _sender;
+    match is_owner with
+    | False =>
+        e = {_eventname : "RefundTokenFailure"; from_contract : _this_address; error: "Invalid sender"}; 
+        event e
+    | True =>
+        balance_token1 <- balances[addr_token1];
+        match balance_token1 with  
+        | None =>
+            balance_token_2 <- balances[addr_token2];
+            match balance_token_2 with  
+            | None =>
+                e = {_eventname : "RefundMethodFailure"; from_contract : _this_address; error: "Balances are empty"}; 
+                event e
+            | Some val =>
+                TransferToken transfer_token addr_token2 _this_address receive_addr2 val rf_handle_transfer_token_1
+            end
+        | Some val =>
+            TransferToken transfer_token addr_token1 _this_address receive_addr1 val rf_handle_transfer_token_1
+        end
+    end
+end
+
+transition rfHandleRTransferToken1()
+    is_from_token1 = builtin eq addr_token1 _sender;
+    match is_from_token1 with
+    | False =>
+        e = {_eventname : "HandleRefundToken1Failure"; from_contract : _this_address; error: "Invalid sender"}; 
+        event e
+    | True =>
+        balance_token_2 <- balances[addr_token2];
+        match balance_token_2 with  
+        | None =>
+            e = {_eventname : "RefundsTokenCompleted"; from_contract : _this_address; success: "True"}; 
+            event e
+        | Some val =>
+            TransferToken transfer_token addr_token2 _this_address receive_addr2 val rf_handle_transfer_token_2
+        end
+    end
+end
+
+transition rfHandleTransferToken2()
+    e = {_eventname : "RefundsTokenCompleted"; from_contract : _this_address; success: "True"}; 
+    event e
+end

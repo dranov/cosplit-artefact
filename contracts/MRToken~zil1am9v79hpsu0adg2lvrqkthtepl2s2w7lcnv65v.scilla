@@ -1,0 +1,335 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import ListUtils
+library MRToken
+
+let one = Uint128 1
+let zero = Uint128 0
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+type Error =
+| Unauthorised
+| ContractPaused
+| InsufficientBalance
+| NotApprovedToTransfer
+
+(* type function to test membership in a list *)
+let is_default_operator = @list_mem ByStr20
+
+(* Util function to test equality for ByStr20 *)
+let f_eq = 
+  fun (a: ByStr20) =>
+  fun (b: ByStr20) =>
+    builtin eq a b
+
+let make_error_event =
+  fun (transition_name: String) =>
+  fun (err: Error) =>
+    let errorCode =
+      match err with
+      | Unauthorised => Int32 -1
+      | ContractPaused => Int32 -2
+      | InsufficientBalance => Int32 -3
+      | NotApprovedToTransfer => Int32 -4
+      end in
+    { _eventname: "TokenError"; raised_at :transition_name;error_code: errorCode}
+
+let get_balance =
+  fun (some_bal : Option Uint128) =>
+  match some_bal with
+  | Some bal => bal
+  | None => Uint128 0
+  end
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract MRToken
+(contract_owner: ByStr20,
+ init_supply: Uint128,
+ decimals : Uint32,
+ name : String,
+ symbol : String,
+ default_operators: List ByStr20)
+
+(* Initial balance is not stated explicitly: it's initialized when creating the contract. *)
+field total_tokens : Uint128 = init_supply
+field balances_map : Map ByStr20 Uint128 =
+  let m = Emp ByStr20 Uint128 in
+    builtin put m contract_owner init_supply
+field allowances_map : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+field is_active: Bool = True
+
+(* Procedures *)
+procedure MakeError (transition_name: String, error: Error)
+  e = make_error_event transition_name error;
+  event e
+end
+
+transition BalanceOf (token_owner : ByStr20)
+  bal <- balances_map[token_owner];
+  match bal with
+  | Some v =>
+    msg = { _tag : "BalanceOfResponse"; _recipient : _sender; _amount : zero;
+            address : token_owner; balance : v};
+    msgs = one_msg msg;
+    send msgs
+  | None =>
+    msg = { _tag : "BalanceOfResponse"; _recipient : _sender; _amount : zero;
+            address : token_owner; balance : zero};
+    msgs = one_msg msg;
+    send msgs
+  end
+end
+
+transition TotalSupply ()
+  t <- total_tokens;
+  msg = { _tag : "TotalSupplyResponse"; _recipient : _sender; _amount : zero;
+          caller : _sender; totalSupply : t};
+  msgs = one_msg msg;
+  send msgs
+end
+
+
+(* pause token, can only be called by contract_owner *)
+transition Pause()
+  is_authorised = builtin eq _sender contract_owner;
+  label = "Pause";
+  match is_authorised with
+  | True =>
+    new_status = False;
+    is_active := new_status;
+    e = {_eventname: "PauseSuccess";initiated_by: _sender};
+    event e
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+(* unpause token, can only be called by contract_owner *)
+transition Unpause()
+  is_authorised = builtin eq _sender contract_owner;
+  label = "Unpause";
+  match is_authorised with
+  | True =>
+    new_status = True;
+    is_active := new_status;
+    e = {_eventname: "UnpauseSuccess";initated_by: _sender};
+    event e
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+
+transition Transfer (to : ByStr20, amount : Uint128)
+  (* checks if token is paused *)
+  label = "Transfer";
+  token_active <- is_active;
+  match token_active with
+  | True =>
+    bal <- balances_map[_sender];
+    match bal with
+    | Some b =>
+      can_do = le_int amount b;
+      match can_do with
+      | True =>
+        (* subtract amount from _sender and add it to "to" *)
+        new_sender_bal = builtin sub b amount;
+        balances_map[_sender] := new_sender_bal;
+
+        (* Adds amount to "to" address *)
+        to_bal <- balances_map[to];
+        new_to_bal = match to_bal with
+        | Some x => builtin add x amount
+        | None => amount
+        end;
+
+        balances_map[to] := new_to_bal;
+        msg = { _tag : "TransferSuccess"; _recipient : _sender; _amount : zero;
+                sender : _sender; recipient : to; amount : amount};
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        (* balance not sufficient. *)
+        err = InsufficientBalance;
+        MakeError label err
+      end
+    | None =>
+      (* no balance record, can't transfer *)
+      err = InsufficientBalance;
+      MakeError label err
+    end
+  | False =>
+    err = ContractPaused;
+    MakeError label err
+  end
+end
+
+
+(* only owner can mint amount *)
+transition Mint(recipient: ByStr20, amount: Uint128)
+  label = "Mint";
+  is_authorised = builtin eq _sender contract_owner;
+  match is_authorised with
+  | True =>
+    get_balance <- balances_map[recipient];
+    old_balance = match get_balance with
+    | Some bal => bal
+    | None => Uint128 0
+    end;
+    prev_total <- total_tokens;
+    new_total = builtin add amount prev_total;
+    new_balance = builtin add old_balance amount;
+    balances_map[recipient] := new_balance;
+    total_tokens := new_total;
+    e = {_eventname: "MintSuccess"; recipient: recipient; minted_amount: amount; new_total_tokens: new_total};
+    event e
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+ end
+end
+
+transition OperatorSend(from: ByStr20, to: ByStr20, amount: Uint128)
+  is_operator = is_default_operator f_eq _sender default_operators;
+  label = "OperatorSend";
+  match is_operator with
+  | True =>
+    b <- balances_map[from];
+    current_balance = get_balance b;
+    can_do = le_int amount current_balance;
+    match can_do with
+    | True =>
+      r <- balances_map[to];
+      recipient_current_balance = get_balance r;
+      recipient_new_bal = builtin add recipient_current_balance amount;
+      sender_new_balance = builtin sub current_balance amount;
+      balances_map[from] := sender_new_balance;
+      balances_map[to] := recipient_new_bal;
+      e = {_eventname: "OperatorSend"; recipient: to; sender: from; amount: amount };
+      event e
+
+    | False =>
+      err = InsufficientBalance;
+      MakeError label err
+    end
+    
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+transition TransferFrom (from : ByStr20, to : ByStr20, amount : Uint128)
+  (* checks if token is paused *)
+  label = "TransferFrom";
+  token_active <- is_active;
+  match token_active with
+  | True =>
+    (* Check if _sender has been authorized by "from" *)
+    bal <- balances_map[from];
+    sender_allowances_map_from <- allowances_map[from][_sender];
+    match bal with
+    | Some a =>
+      match sender_allowances_map_from with
+      | Some b =>
+          (* We can only transfer the minimum of available or authorized amount *)
+          t = min_int a b;
+          can_do = le_int amount t;
+          match can_do with
+          | True =>
+              (* amount is what we should subtract from "from" and add to "to" *)
+              new_from_bal = builtin sub a amount;
+              balances_map[from] := new_from_bal;
+              to_bal <- balances_map[to];
+              match to_bal with
+              | Some tb =>
+                  new_to_bal = builtin add tb amount;
+                  balances_map[to] := new_to_bal
+              | None =>
+                  (* "to" has no balance. So just set it to amount *)
+                  balances_map[to] := amount
+              end;
+              (* reduce "allowances_map" by "amount" *)
+              new_allowances_map = builtin sub b amount;
+              allowances_map[from][_sender] := new_allowances_map;
+              msg = { _tag : "TransferFromSuccess"; _recipient : _sender; _amount : zero;
+                      sender : from; recipient : to; amount : amount };
+              msgs = one_msg msg;
+              send msgs
+          | False =>
+            err = NotApprovedToTransfer;
+            MakeError label err
+          end
+      | None =>
+        err = NotApprovedToTransfer;
+        MakeError label err
+      end
+    | None =>
+      err = NotApprovedToTransfer;
+      MakeError label err
+    end
+  | False =>
+    err = ContractPaused;
+    MakeError label err
+  end
+end
+
+transition Approve (spender : ByStr20, amount : Uint128)
+  allowances_map[_sender][spender] := amount;
+  msg = { _tag : "ApproveSuccess"; _recipient : _sender; _amount : zero;
+          approver : _sender; spender : spender; amount : amount };
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition Allowance (token_owner : ByStr20, spender : ByStr20)
+  spender_allowance <- allowances_map[contract_owner][spender];
+  match spender_allowance with
+  | Some n =>
+      msg = { _tag : "AllowanceResponse"; _recipient : _sender; _amount : zero;
+              owner : token_owner; spender : spender; amount : n };
+      msgs = one_msg msg;
+      send msgs
+  | None =>
+      msg = { _tag : "AllowanceResponse"; _recipient : _sender; _amount : zero;
+              owner : token_owner; spender : spender; amount : zero };
+      msgs = one_msg msg;
+      send msgs
+  end
+end

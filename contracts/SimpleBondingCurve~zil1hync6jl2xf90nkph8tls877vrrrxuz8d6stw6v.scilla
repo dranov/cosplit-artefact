@@ -1,0 +1,258 @@
+scilla_version 0
+
+(* This contract implements a fungible token interface a la ERC20.*)
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library SimpleBondingCurve
+
+let zero = Uint128 0
+
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+
+let calculate_purchase_return =
+  fun (smart_total_supply: Uint128) => fun (base_token_amount: Uint128) =>
+    builtin add base_token_amount zero
+
+let calculate_sale_return =
+  fun (smart_total_supply: Uint128) => fun (smart_token_amount: Uint128) =>
+    builtin add smart_token_amount zero
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract SimpleBondingCurve
+(owner : ByStr20,
+ decimals : Uint32,
+ name : String,
+ symbol : String,
+ base_token_contract: ByStr20)
+
+(* Initial balance is not stated explicitly: it's initialized when creating the contract. *)
+
+field total_tokens : Uint128 = Uint128 0
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field allowed : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+
+
+transition BalanceOf (tokenOwner : ByStr20)
+  bal <- balances[tokenOwner];
+  match bal with
+  | Some v =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : v};
+	event e
+  | None =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : Uint128 0};
+    event e
+  end
+end
+
+transition TotalSupply ()
+  total <- total_tokens;
+  e = {_eventname : "TotalSupply"; caller : _sender; balance : total};
+  event e
+end
+
+transition Transfer (to : ByStr20, tokens : Uint128)
+  bal <- balances[_sender];
+  match bal with
+  | Some b =>
+    can_do = le_int tokens b;
+    match can_do with
+    | True =>
+      (* subtract tokens from _sender and add it to "to" *)
+      new_sender_bal = builtin sub b tokens;
+      balances[_sender] := new_sender_bal;
+
+      (* Adds tokens to "to" address *)
+      to_bal <- balances[to];
+      new_to_bal = match to_bal with
+      | Some x => builtin add x tokens
+      | None => tokens
+      end;
+
+  	  balances[to] := new_to_bal;
+      e = {_eventname : "TransferSuccess"; sender : _sender; recipient : to; amount : tokens};
+      event e
+    | False =>
+      (* balance not sufficient. *)
+      e = {_eventname : "TransferFailure"; sender : _sender; recipient : to; amount : Uint128 0};
+      event e
+    end
+  | None =>
+    (* no balance record, can't transfer *)
+  	e = {_eventname : "TransferFailure"; sender : _sender; recipient : to; amount : Uint128 0};
+    event e
+  end
+end
+
+transition TransferFrom (from : ByStr20, to : ByStr20, tokens : Uint128)
+  bal <- balances[from];
+  (* Check if _sender has been authorized by "from" *)
+  sender_allowed_from <- allowed[from][_sender];
+  match bal with
+  | Some a =>
+    match sender_allowed_from with
+    | Some b =>
+        (* We can only transfer the minimum of available or authorized tokens *)
+        t = min_int a b;
+        can_do = le_int tokens t;
+        match can_do with
+        | True =>
+            (* tokens is what we should subtract from "from" and add to "to" *)
+            new_from_bal = builtin sub a tokens;
+            balances[from] := new_from_bal;
+            to_bal <- balances[to];
+            match to_bal with
+            | Some tb =>
+                new_to_bal = builtin add tb tokens;
+                balances[to] := new_to_bal
+            | None =>
+                (* "to" has no balance. So just set it to tokens *)
+                balances[to] := tokens
+            end;
+            (* reduce "allowed" by "tokens" *)
+            new_allowed = builtin sub b tokens;
+            allowed[from][_sender] := new_allowed;
+            e = {_eventname : "TransferFromSuccess"; sender : from; recipient : to; amount : tokens};
+            event e
+        | False =>
+            e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+            event e
+        end
+    | None =>
+        e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+        event e
+    end
+  | None =>
+	e = {_eventname : "TransferFromFailure"; sender : from; recipient : to; amount : Uint128 0};
+	event e
+  end
+end
+
+transition Approve (spender : ByStr20, tokens : Uint128)
+  allowed[_sender][spender] := tokens;
+  e = {_eventname : "ApproveSuccess"; approver : _sender; spender : spender; amount : tokens};
+  event e
+end
+
+transition Allowance (tokenOwner : ByStr20, spender : ByStr20)
+  spender_allowance <- allowed[tokenOwner][spender];
+  match spender_allowance with
+  | Some n =>
+      e = {_eventname : "Allowance"; owner : tokenOwner; spender : spender; amount : n};
+      event e
+  | None =>
+      e = {_eventname : "Allowance"; owner : tokenOwner; spender : spender; amount : Uint128 0};
+      event e
+  end
+end
+
+transition Buy (base_token_amount : Uint128)
+  smart_total <- total_tokens;
+  smart_token_to_mint = calculate_purchase_return smart_total base_token_amount;
+
+  bal <- balances[_sender];
+
+  match bal with
+  | Some b =>
+    new_sender_bal = builtin add b smart_token_to_mint;
+    balances[_sender] := new_sender_bal;
+
+    e = { _eventname : "MintSuccessInBuyTransition"; _sender : _sender; _recipient: _this_address; _amount : zero;
+      recipient : _sender; amount : smart_token_to_mint; balance: new_sender_bal};
+    event e
+  | None =>
+
+    balances[_sender] := smart_token_to_mint;
+
+    e = { _eventname : "MintSuccessInBuyTransition"; _sender : _sender; _recipient: _this_address; _amount : zero;
+      recipient : _sender; amount : smart_token_to_mint; balance: smart_token_to_mint};
+    event e
+  end;
+
+  total <- total_tokens;
+  new_total = builtin add total smart_token_to_mint;
+  total_tokens := new_total;
+  e = { _eventname : "NewTotalTokensInBuyTransition"; sender : _sender; recipient : _this_address;
+    total : new_total};
+  event e;
+
+  msg = { _tag : "TransferFrom"; _recipient : base_token_contract; _amount : zero;
+  from : _sender; to : _this_address; tokens : base_token_amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition Sell (smart_token_amount : Uint128)
+  smart_total <- total_tokens;
+  base_token_amount = calculate_sale_return smart_total smart_token_amount;
+
+  bal <- balances[_sender];
+
+  match bal with
+  | Some b =>
+    can_do = le_int smart_token_amount b;
+    match can_do with
+    | True =>
+      new_sender_bal = builtin sub b smart_token_amount;
+      balances[_sender] := new_sender_bal;
+
+      e = {_eventname : "BurnSuccessInSellTransition"; _sender : _sender; _recipient : _this_address; _amount : zero;
+        recipient : _sender; amount : smart_token_amount; balance: new_sender_bal};
+      event e;
+
+      total <- total_tokens;
+      new_total = builtin sub total smart_token_amount;
+      total_tokens := new_total;
+      e = { _eventname : "NewTotalTokensInSellTransition"; sender : _sender; recipient : _this_address;
+        total : new_total};
+      event e;
+
+      msg = { _tag : "Transfer"; _recipient : base_token_contract; _amount : zero;
+      to : _sender; tokens : base_token_amount};
+      msgs = one_msg msg;
+      send msgs
+
+    | False =>
+      (* balance not sufficient. *)
+      e = {_eventname : "BurnFailureInSellTransition"; sender : _sender; recipient : _this_address;
+        amount : zero};
+      event e
+    end
+  | None =>
+    (* no balance record, can't transfer *)
+    e = {_eventname : "BurnFailureInSellTransition"; sender : _sender; recipient : _this_address;
+      amount : zero};
+    event e
+  end
+end

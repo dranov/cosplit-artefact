@@ -1,0 +1,127 @@
+scilla_version 0 
+
+import BoolUtils
+
+library Voting 
+
+let vote_not_allowed = Int32 0
+let successfull_vote = Int32 1
+let not_owner_code = Int32 2
+let added_voter_successfully = Int32 3
+let added_candidate_successfully = Int32 4
+let candidate_already_added = Int32 5
+let candidate_inexistent = Int32 6
+
+let zero = Int32 0
+let one = Int32 1
+
+let one_option =
+  let one = Int32 10 in
+  Some {Int32} one
+
+let true : Bool = True
+
+
+contract Voting (owner: ByStr20)
+                
+field candidates_votes: Map String Int32 = Emp String Int32
+field voters: Map ByStr20 Bool = Emp ByStr20 Bool
+
+(* should make a "setVoters transition that adds multiple voters at a time 
+taking a list as parameter "*)
+
+(* TODO change individual events to have different names, so they can pass different parameters *)
+
+transition addVoter(voter_address : ByStr20)
+    (* setting "voter_address" as an authorised voter *)
+    isOwner = builtin eq _sender owner;
+    match isOwner with
+    | False =>
+        e = {_eventname: "addVoter";
+            code : not_owner_code;
+            voter: voter_address
+        };
+        event e
+    | True =>
+        voters[voter_address] := true;
+        e = {_eventname: "addVoter";
+            code: added_voter_successfully;
+            voter: voter_address
+        };
+        event e
+    end 
+end 
+
+
+transition addCandidate(candidate_name : String)
+    (* the owner can add candidates.
+    Ideally this should be allowed to happend only before the actual
+    voting has started. Alternatively the contract could be provided with
+    an immutable list of candidates at it's creation *)
+    isOwner = builtin eq _sender owner;
+    match isOwner with
+    | False =>
+        e = {_eventname: "addCandidate";
+            added_candidate: candidate_name;
+            code: not_owner_code};
+        event e
+    | True =>
+        (* making sure the candidate hasn't been alreasdy added 
+        if the owner were allowed to call this while the voting was 
+        happening (as he is now) he could simply add a candidate that 
+        was already voted, resetting his votes to 0. *)
+        candidate_exists <- exists candidates_votes[candidate_name];
+        match candidate_exists with 
+        | False =>
+            candidates_votes[candidate_name] := zero;
+            e = {_eventname: "addCandidate";
+                added_candidate: candidate_name;
+                code: added_candidate_successfully
+            };
+            event e
+        | True =>
+            e = {_eventname: "addCandidate";
+                added_candidate: candidate_name; 
+                code: candidate_already_added
+            };
+            event e
+        end 
+    end
+end
+
+
+transition vote(option : String)
+    (* option is the name of the candidate being voted *)
+    allowed <- voters[_sender];
+    match allowed with 
+    | Some False =>
+        e = {_eventname: "vote"; voter: _sender; code: vote_not_allowed}; 
+        event e 
+    | Some True =>
+        
+        old_vote <- candidates_votes[option];
+        match old_vote with
+        | None => 
+            (* option is not a candidate, can't vote him *)
+            e = {_eventname: "vote";
+                voter: _sender;
+                code: candidate_inexistent};
+            event e
+        | Some value =>
+            (* option is a candidate *)
+            new_vote = builtin add one value; 
+            candidates_votes[option] := new_vote;
+            
+            e = {_eventname: "vote";
+                voter: _sender;
+                code: successfull_vote }; 
+            event e
+        end 
+        
+    | None =>
+        (* voter non existent *)
+        e = {_eventname: "vote"; voter: _sender; code: vote_not_allowed}; 
+        event e 
+    end 
+end 
+    

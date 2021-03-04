@@ -1,0 +1,470 @@
+scilla_version 0
+
+import BoolUtils IntUtils ListUtils NatUtils PairUtils
+
+library AuctionRegistrarLib
+
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+
+let oneMsg =
+  fun(msg: Message) =>
+    let nilMsg = Nil {Message} in
+    Cons {Message} msg nilMsg
+
+type Auction = 
+| Auction of ByStr20 Uint128 BNum String
+(* Bidder, Current Bid, Ending Block, Label *)
+
+let calcMinimumBid = 
+  fun(bidIncrementNumerator: Uint128) => 
+  fun(bidIncrementDenominator: Uint128) => 
+  fun(currentBid: Uint128) =>
+    let f1 = builtin add bidIncrementNumerator bidIncrementDenominator in
+    let f2 = builtin mul currentBid f1 in
+      builtin div f2 bidIncrementDenominator
+
+let calcEndingBlk =
+  fun(minimumAuctionLength: Uint64) => 
+  fun(blk: BNum) => 
+  fun(endingBlk: BNum) =>
+    let minAuctionEnding = builtin badd blk minimumAuctionLength in
+    let isCurrentEndingBlkTooShort = 
+      builtin blt endingBlk minAuctionEnding in
+      match isCurrentEndingBlkTooShort with
+      | True => minAuctionEnding
+      | False => endingBlk
+      end
+
+let eRunningSet =
+  fun(running: Bool) =>
+    {_eventname: "RunningSet"; running: running}
+
+let eStart =
+  fun(node: ByStr32) =>
+  fun(bidder: ByStr20) =>
+  fun(bid: Uint128) =>
+  fun(endingBlk: BNum) =>
+    {_eventname: "Start"; node: node; bidder: bidder; bid: bid; 
+     endingBlk: endingBlk}
+
+let eBid =
+  fun(node: ByStr32) =>
+  fun(bidder: ByStr20) =>
+  fun(bid: Uint128) =>
+  fun(endingBlk: BNum) =>
+    {_eventname: "Bid"; node: node; bidder: bidder; bid: bid; 
+     endingBlk: endingBlk}
+
+let eClose =
+  fun(node: ByStr32) =>
+  fun(bidder: ByStr20) =>
+  fun(bid: Uint128) =>
+    {_eventname: "Close"; node: node; bidder: bidder; bid: bid}
+
+
+let eQaPricePerUSDSet =
+  fun(price: Uint128) =>
+    {_eventname: "QaPricePerUSDSet"; price: price}
+
+let eDefaultPriceUSDSet =
+  fun(price: Uint128) =>
+    {_eventname: "DefaultPriceUSDSet"; price: price}
+
+let eMaxPriceUSDSet =
+  fun(price: Uint128) =>
+    {_eventname: "MaxPriceUSDSet"; price: price}
+
+let eLengthPriceUSDSet =
+  fun(length: Uint32) =>
+  fun(price: Uint128) =>
+    {_eventname: "LengthPriceUSDSet"; length: length; price: price}
+
+let eCustomPriceUSDSet =
+  fun(node: ByStr32) =>
+  fun(price: Uint128) =>
+    {_eventname: "CustomPriceUSDSet"; node: node; price: price}
+  
+let eError =
+  fun(message: String) =>
+    {_eventname: "Error"; message: message}
+
+contract AuctionRegistrar(
+  owner: ByStr20,
+  registry: ByStr20,
+  ownedNode: ByStr32,
+  initialAuctionLength: Uint64,
+  minimumAuctionLength: Uint64,
+  initialDefaultPrice: Uint128,
+  bidIncrementNumerator: Uint128,
+  bidIncrementDenominator: Uint128,
+  initialPricePerQa: Uint128,
+  initialMaxPriceUSD: Uint128
+)
+
+field running: Bool = False
+field auctions: Map ByStr32 Auction = Emp ByStr32 Auction 
+
+(* Defines a currency conversion between USD and Qa (a subunit of ZIL) *)
+field qaPerUSD: Uint128 = initialPricePerQa
+(* Defines a default initial price for all domains in USD *)
+field defaultPriceUSD: Uint128 = initialDefaultPrice
+(* Defines a custom initial price in USD for all domains with specific length *)
+(* Prices defined by this field have higher priority than defaultPriceUSD *)
+(* e.g {2 => 10, 3 => 15} would define that all two-symbol domains will be sold for 10 USD *)
+(* and three-symbol domains for 15 USD *)
+(* a key is used to specify the number of symbols in domain name *)
+(* a value defines a price for the given length *)
+field lengthPricesUSD: Map Uint32 Uint128 = Emp Uint32 Uint128
+(* Defines a custom initial price a custom premium domain *)
+(* Prices defined by this field have higher priority than any other definition field *)
+(* a key is a name of the domain *)
+(* a value defines a price for the given name *)
+field customPricesUSD: Map ByStr32 Uint128 = Emp ByStr32 Uint128
+(* Defines the maximum price of the domain *)
+(* No bid can be made above this price *)
+field maxPriceUSD: Uint128 = initialMaxPriceUSD
+
+(* Sets qaPerUSD field *)
+(* @ensures sender is an owner of the contract *)
+(* @param newPrice a new value for the field *)
+(* @emits QaPricePerUSDSet if the field was updated successfully *)
+transition setQaPricePerUSD(newPrice: Uint128)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True =>
+    e = eQaPricePerUSDSet newPrice;
+    event e;
+
+    qaPerUSD := newPrice
+  | _ =>
+  end
+end
+
+(* Sets defaultPriceUSD field *)
+(* @ensures sender is an owner of the contract *)
+(* @param newPrice a new value for the field *)
+(* @emits DefaultPriceUSDSet if the field was updated successfully *)
+transition setDefaultPriceUSD(newPrice: Uint128)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True =>
+    e = eDefaultPriceUSDSet newPrice;
+    event e;
+
+    defaultPriceUSD := newPrice
+  | _ =>
+  end
+end
+
+(* Sets maxPriceUSD field *)
+(* @ensures sender is an owner of the contract *)
+(* @param newPrice a new value for the field *)
+(* @emits MaxPriceUSDSet if the field was updated successfully *)
+transition setMaxPriceUSD(newPrice: Uint128)
+  isOkSender = builtin eq _sender owner;
+  
+  match isOkSender with
+  | True =>
+    e = eMaxPriceUSDSet newPrice;
+    event e;
+
+    maxPriceUSD := newPrice
+  | _ =>
+  end
+end
+
+(* Sets a price for domains with given length *)
+(* @ensures sender is an owner of the contract *)
+(* @param length number of symbols in the domain name *)
+(* @param newPrice a price for domains of the give length *)
+(* @emits LengthPriceUSDSet if the price was updated successfully *)
+transition setLengthPriceUSD(length: Uint32, newPrice: Uint128)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True =>
+    e = eLengthPriceUSDSet length newPrice;
+    event e;
+
+    isNewPriceZero = let n = Uint128 0 in builtin eq newPrice n;
+    match isNewPriceZero with
+    | True =>
+      delete lengthPricesUSD[length] 
+    | False =>
+      lengthPricesUSD[length] := newPrice
+    end
+  | _ =>
+  end
+end
+
+(* Sets a price for the given node (domain) *)
+(* @ensures sender is an owner of the contract *)
+(* @param node domain node address *)
+(* @param newPrice a new fixed price for the domain *)
+(* @emits CustomPriceUSDSet if the price was updated successfully *)
+transition setCustomPriceUSD(node: ByStr32, newPrice: Uint128)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True =>
+    e = eCustomPriceUSDSet node newPrice;
+    event e;
+
+    isNewPriceZero = let n = Uint128 0 in builtin eq newPrice n;
+    match isNewPriceZero with
+    | True =>
+      delete customPricesUSD[node]
+    | False =>
+      customPricesUSD[node] := newPrice
+    end
+  | _ =>
+  end
+end
+
+(* Makes an auction for the domain *)
+(* @accepts sent amount all the time *)
+(* @ensures sender is a ZNS registry *)
+(* @ensures sent amount is above the base price for the domain *)
+(* @param node domain address *)
+(* @param origin an address that initializes the auction *)
+(* @param parent an address of the parent node *)
+(* @param label the new domain name *)
+(* @sends sent amount back to the origin if the auction can not be started *)
+(* @sends bestow with origin address to the registry contract if sent amount is more than a maximum price *)
+(* @emits Start if the auction was started successfully *)
+(* @emits Close if the domain is instantly purchased by paying the maximum amount *)
+(* @emits Error if the auction wasn't started *)
+transition register(
+  origin: ByStr20, 
+  node: ByStr32, 
+  parent: ByStr32,
+  label: String
+)
+  accept;
+
+  auctionExists <- exists auctions[node];
+
+  match auctionExists with
+  | False =>
+    isRunning <- running;
+
+    maybeCustomPriceUSD <- customPricesUSD[node];
+    labelLen = builtin strlen label;
+    maybeLengthPriceUSD <- lengthPricesUSD[labelLen];
+    currentDefaultPriceUSD <- defaultPriceUSD;
+    currentQaPerUSD <- qaPerUSD;
+
+    price =
+      let priceUSD = 
+        match maybeCustomPriceUSD with
+        | Some customPriceUSD => customPriceUSD
+        | None => 
+          match maybeLengthPriceUSD with
+          | Some lenthPriceUSD => lenthPriceUSD
+          | None => currentDefaultPriceUSD
+          end
+        end in
+        builtin mul priceUSD currentQaPerUSD;
+
+    isOk = 
+      let isOkParent = builtin eq ownedNode parent in
+      let isOkSender = builtin eq registry _sender in
+      let isOkAmount = builtin lt price _amount in
+      let isOkRequest = andb isOkSender isOkAmount in
+      let isOk = andb isOkParent isOkRequest in
+        andb isOk isRunning;
+
+    match isOk with
+    | True =>
+      currentMaxPriceUSD <- maxPriceUSD;
+
+      maxPrice = builtin mul currentMaxPriceUSD currentQaPerUSD;
+      paidMaxPrice = builtin lt maxPrice _amount;
+
+      match paidMaxPrice with
+      | True =>
+        e = eClose node origin _amount;
+        event e;
+
+        msgs = 
+          let m = {_tag: "bestow"; _recipient: registry; _amount: Uint128 0; 
+                  label: label; owner: origin; resolver: zeroByStr20} in
+          oneMsg m;
+        send msgs
+      | False => 
+        blk <- & BLOCKNUMBER;
+        endingBlk = builtin badd blk initialAuctionLength;
+        newAuction = Auction origin _amount endingBlk label;
+
+        auctions[node] := newAuction;
+
+        e = eStart node origin _amount endingBlk;
+        event e;
+
+        msgs = 
+          let m = {_tag: "bestow"; _recipient: registry; _amount: Uint128 0; 
+                  label: label; owner: _this_address; resolver: zeroByStr20} in
+          oneMsg m;
+        send msgs
+      end
+    | False =>
+      e = let m = "Auctions are not running or invalid amount sent" in eError m;
+      event e;
+
+      msgs = 
+        let m = {_tag: "onRefund"; _recipient: origin; _amount: _amount} in
+          oneMsg m;
+      send msgs
+    end
+  | True =>
+    e = let m = "Auction already exists" in eError m;
+    event e;
+ 
+    msgs = 
+      let m = {_tag: "onRefund"; _recipient: origin; _amount: _amount} in
+        oneMsg m;
+    send msgs
+  end
+end
+
+(* Increases the bid amount for a domain. Can instantly close the auction if the maximum allowed price is paid. *)
+(* @ensures an auction is started the domain *)
+(* @ensures sent amount is above a minimum increment threshold *)
+(* @param node domain address *)
+(* @accepts sent amount if the new bid is made *)
+(* @sends the amount of previous highest bid to the bidder address if the new bid is made *)
+(* @sends assign to registry if the new bid amount is higher than maximum price *)
+(* @emits Bid if the new bid is made *)
+(* @emits Close if the new bid amount is higher than maximum price *)
+transition bid(node: ByStr32)
+  maybeAuction <- auctions[node];
+
+  match maybeAuction with
+  | None =>
+    e = let m = "Auction does not exist" in eError m;
+    event e
+  | Some auction =>
+    match auction with
+    | Auction highestBidder currentBid endingBlk label =>
+      blk <- & BLOCKNUMBER;
+
+      isOk = 
+        let minBid = calcMinimumBid bidIncrementNumerator bidIncrementDenominator currentBid in
+        let isOkAmount = builtin lt minBid _amount in
+        let isOkBlk = builtin blt blk endingBlk in
+          andb isOkAmount isOkBlk;
+
+      match isOk with
+      | True =>
+        currentQaPerUSD <- qaPerUSD;
+        currentMaxPriceUSD <- maxPriceUSD;
+
+        maxPrice = builtin mul currentMaxPriceUSD currentQaPerUSD;
+        paidMaxPrice = builtin lt maxPrice _amount;
+
+        newEndingBlk = 
+          match paidMaxPrice with
+          | True => blk
+          | False => calcEndingBlk minimumAuctionLength blk endingBlk
+          end;
+
+        newAuction = Auction _sender _amount newEndingBlk label;
+        
+        auctions[node] := newAuction;
+        
+        accept;
+        
+        e = eBid node _sender _amount newEndingBlk;
+        event e;
+
+        msgs = 
+          let msg = {_tag: "onRefund"; _recipient: highestBidder; _amount: currentBid} in
+            oneMsg msg;
+        send msgs
+      | _ =>
+        e =
+          let m = "Invalid amount or block"
+            in eError m;
+        event e
+      end
+    end
+  end
+end
+
+(* Closes the auction for a node *)
+(* @ensures an auction exists for the node *)
+(* @ensures the current block number is above the auction ending block *)
+(* @emits Close if the auction is closed successfully *)
+(* @emits bestow with highest bid address as the node owner *)
+transition close(node: ByStr32)
+  maybeAuction <- auctions[node];
+
+  match maybeAuction with
+  | None =>
+    e =
+      let m = "No auction for node"
+        in eError m;
+      event e
+  | Some auction => 
+    match auction with
+    | Auction highestBidder currentBid endingBlk label => 
+      blk <- & BLOCKNUMBER;
+      isOkBlk = builtin blt endingBlk blk;
+
+      match isOkBlk with
+      | True =>
+        delete auctions[node];
+        e = eClose node highestBidder currentBid;
+        event e;
+
+        msg = {_tag: "transfer"; _recipient: registry; _amount: Uint128 0; 
+              node: node; owner: highestBidder};
+        msgs = oneMsg msg;
+        send msgs
+      | _ => 
+        e =
+        let m = "Invalid block"
+          in eError m;
+        event e
+      end
+    end
+  end
+end
+
+(* Starts or pauses an Auction through running field*)
+(* @ensures sender is an owner of the contract *)
+(* @param newRunning when true the auction is started, otherwise it is paused *)
+(* @emits RunningSet if the operation was successful *)
+transition setRunning(newRunning: Bool)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True => 
+    running := newRunning;
+    e = eRunningSet newRunning;
+    event e
+  | _ =>
+  end
+end
+
+(* Withdraws the given amount from the contract*)
+(* @ensures sender is an owner of the contract *)
+(* @param address to transfer the amount *)
+(* @param amount *)
+(* @sends amount to given address *)
+transition withdraw(address: ByStr20, amount: Uint128)
+  isOkSender = builtin eq _sender owner;
+
+  match isOkSender with
+  | True =>
+    msg = {_tag: "onWithdraw"; _recipient: address; _amount: amount};
+    msgs = oneMsg msg;
+    send msgs
+  | _ =>
+  end
+end
+
+transition onTransferSuccess(node: ByStr32, owner: ByStr20) end
+transition onTransferFailure(node: ByStr32, owner: ByStr20) end

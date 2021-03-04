@@ -1,0 +1,442 @@
+scilla_version 0
+
+(* Hybrid EURO [HEUR] official smart contract to be used to represent fiat-backed stablecoin *)
+
+import BoolUtils IntUtils ListUtils
+
+library HEUR 
+
+let min_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+  let alt = builtin lt a b in
+  match alt with
+  | True =>
+    a
+  | False =>
+    b
+  end
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* A util function to test equality *)
+let f_eq =
+  fun (a : ByStr20) =>
+  fun (b : ByStr20) =>
+    builtin eq a b
+
+(* Instantiate a type function to test membership in a list *)
+let isDefaultOperator = @list_mem ByStr20
+
+(* Simple global constants *)
+let zero = Uint128 0
+let one  = Uint128 1
+let true = True
+let false = False
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract HEUR 
+(
+  name :    String,
+  symbol :  String,
+  decimals : Uint32,
+  init_owner : ByStr20,
+  default_operators : List ByStr20
+)
+
+
+field owner : ByStr20 = init_owner
+field pauser : ByStr20 = init_owner 
+field masterMinter : ByStr20 = init_owner
+field paused : Bool = False
+
+field revokedDefaultOperators : Map ByStr20 (Map ByStr20 Bool) = Emp ByStr20 (Map ByStr20 Bool)
+
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field allowed : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)    
+field totalSupply : Uint128  = zero
+field minters : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field minterAllowed : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+(* Re-authorize a default operator for an initiator *)
+transition reauthorizeDefaultOperator(operator : ByStr20, initiator : ByStr20)  
+  isDefaultOperator = isDefaultOperator f_eq operator default_operators;
+  match isDefaultOperator with
+  | True  => 
+    delete revokedDefaultOperators[initiator][operator];
+    e = { _eventname : "ReAuthorizedDefaultOperator"; operator : operator; sender : initiator};
+    event e
+  | False =>
+  end
+end
+
+(* Revoke a default operator for an initiator *)
+transition revokeDefaultOperator(operator : ByStr20, initiator : ByStr20)
+  isDefaultOperator =  isDefaultOperator f_eq operator default_operators;
+  match isDefaultOperator with
+  | True  => 
+    revokedDefaultOperators[initiator][operator] := true;
+    e = {_eventname : "RevokedDefaultOperator"; operator : operator; sender : initiator};
+    event e
+  | False =>
+  end
+end
+
+(* Allows the current owner to transfer control of the contract to a newOwner *)
+transition transferOwnership(newOwner : ByStr20, initiator : ByStr20)
+  current_owner <- owner;
+  isowner = builtin eq initiator current_owner;
+  match isowner with
+  | True =>
+    owner := newOwner;
+    e = {_eventname : "OwnershipTransferred"; from : initiator; to : newOwner};
+	  event e 
+  | False =>
+  end
+end 
+
+(* Pause the contract to temporarily stop all transfer of tokens. *)
+(* Other housekeeping transitions can still be invoked. *)
+(* Only the current pauser can invoke this transition. *)
+transition pause(initiator : ByStr20)
+  current_pauser <- pauser;
+  ispauser = builtin eq current_pauser initiator;
+  match ispauser with
+  | True  =>
+    paused := true;
+    e = { _eventname : "Paused"};
+    event e
+  | False =>
+  end
+end
+
+(* Unpause the contract to reallow transfer of tokens. *)
+(* Only the current pauser can invoke this transition. *)
+transition unpause(initiator : ByStr20)
+  current_pauser <- pauser;
+  ispauser = builtin eq current_pauser initiator;
+  match ispauser with
+  | True  =>
+    paused := false;   
+    e = {_eventname : "Unpaused"};
+    event e
+  | False =>
+  end
+end
+
+(* Replace the current pauser with the newPauser *)
+(* Only the current owner can invoke this transition *)
+transition updatePauser(newPauser : ByStr20, initiator : ByStr20)
+  current_owner <- owner;
+  isowner = builtin eq initiator current_owner;
+  match isowner with
+  | True  =>  
+    pauser := newPauser;
+    e = {_eventname : "PauserUpdated"; pauser : newPauser};  
+    event e
+  | False =>
+  end   
+end
+
+(* Replace the current masterMinter with the newMasterMinter *)
+(* Only the current owner can invoke this transition *)
+transition updateMasterMinter(newMasterMinter : ByStr20, initiator : ByStr20)
+  current_owner <- owner;
+  isowner = builtin eq initiator current_owner;
+  match isowner with
+  | True =>
+    masterMinter := newMasterMinter;
+    e = {_eventname : "MasterMinterUpdated"; masterMinter : newMasterMinter};  
+    event e
+  | False =>
+  end 
+end
+
+(* Add a new minter or update the quota for an existing minter. *)
+(* Only the masterMinter can inovke this transition. *)
+(* The contract should not be paused during this operation. *)
+transition configureMinter(minter : ByStr20, minterAllowedAmount : Uint128, initiator : ByStr20)
+  (* Proceed if the following conditions are met: *)
+  (* 1. Contract is not paused. *)
+  (* 2. Initiator is the masterMinter *)
+  isPaused <- paused;
+  currentMasterMinter <- masterMinter;
+  isMasterMinter = builtin eq initiator currentMasterMinter;
+  or_res = let tmp = negb isMasterMinter in orb isPaused tmp;
+  match or_res with
+  | False =>
+    minters[minter] := one;
+    minterAllowed[minter] := minterAllowedAmount;
+    e = { _eventname : "MinterConfigured"; minter : minter; amount : minterAllowedAmount};
+    event e
+  | True =>
+  end  
+end
+
+(* Remove a given minter *)
+(* Only the masterMinter can invoke this transition *)
+transition removeMinter(minter : ByStr20, initiator : ByStr20)
+  currentMasterMinter <- masterMinter;
+  isMasterMinter = builtin eq initiator currentMasterMinter;
+  match isMasterMinter with
+  | True => 
+    delete minters[minter];
+    minterAllowed[minter] := zero;
+    e = { _eventname : "MinterRemoved"; minter : minter};
+    event e
+  | False =>
+  end
+end
+
+(* Mint value number of new tokens and allocated them to the to address. *)
+(* Minting can only be done when the contract is not paused. *)
+transition mint(to: ByStr20, value : Uint128, initiator : ByStr20)
+  isPaused <- paused;
+  isMinter <- exists minters[initiator];
+  or_res =
+      let isNotMinter = negb isMinter in
+       orb isPaused isNotMinter;
+  (* If the following conditions are met proceed: *)
+  (* 1) Contract is not paused *) 
+  match or_res with   
+  | False =>
+    (* Check the amount that the minter is allowed to mint *)
+    allowed_amount <- minterAllowed[initiator];
+    match allowed_amount with
+    | Some a => 
+      (* Proceed if the amount is less than or equal to the minted value *)
+      within_limits = uint128_le value a;
+      match within_limits with
+      | True =>
+        (* Update totalSupply, recipient's balance, minter's quota *)
+        t <- totalSupply;
+        new_tokens = builtin add value t;
+        totalSupply := new_tokens;
+        x <- balances[to];
+        current_val = match x with
+                      | Some v => v 
+                      | None   => zero
+                      end;        
+        new_bal = builtin add value current_val;
+        balances[to] := new_bal;
+        new_allowed_amount = builtin sub a value;
+        minterAllowed[initiator] := new_allowed_amount;
+        e = {_eventname : "Minted"; minter : initiator; amount : value; recipient : to};
+        event e
+      | False =>
+      end
+    | None => 
+    end
+  | True =>      
+  end
+end
+
+(* Burn value number of tokens *)
+(* Burning can only be done when the contract is not paused. *)
+transition burn(value : Uint128, initiator : ByStr20)
+  (* If the following conditions are met proceed: *)
+  (* 1) Contract is not paused *)
+  isPaused <- paused;
+  isMinter <- exists minters[initiator];   
+  or_res =
+  let isNotMinter = negb isMinter in
+    orb isPaused isNotMinter;
+
+  match or_res with 
+  | False => 
+    bal <- balances[initiator];
+    match bal with
+    | Some b =>
+      (* Proceed if the minter has enough tokens to burn. *)
+      can_do = uint128_le value b;
+      match can_do with
+      | True =>
+        (* Update totalSupply and minter's balance *)
+        new_balance = builtin sub b value;
+        balances[initiator] := new_balance;    
+        currentSupply <- totalSupply;
+        new_supply = builtin sub currentSupply value;
+        totalSupply := new_supply;         
+        e = { _eventname : "Burnt"; burner : initiator; amount : value};
+        event e      
+      | False =>      
+       end
+    | None =>
+    end    
+  | True =>
+  end
+end
+
+(* Approve a spender to spend on behalf of a token holder upto the value amount *)
+(* Approval can only be done when the contract is not paused. *)
+transition approve(spender : ByStr20, value : Uint128, initiator : ByStr20)
+    (* Proceed if the following conditions are met: *)
+    (* 1. The contract is not paused. *)
+    isPaused <- paused;
+    or_res = isPaused;
+    match or_res with
+    | False =>
+      allowed[initiator][spender] := value;
+      e = {_eventname : "Approved"; sender : initiator; spender : spender; amount : value};
+      event e;
+      (* Also send a message out to the initiator in case a callback action needs to be taken. *)
+      msg = {_tag : "ApproveSuccessCallBack"; _recipient : initiator; _amount : zero;
+             approver : initiator; spender : spender; amount : value };
+      msgs = one_msg msg;
+      send msgs
+    | True => 
+    end
+end
+
+(* Transfer value number of tokens from the initiator to the to address *)
+(* Transfer can only be done when the contract is not paused. *)
+transition transfer(to : ByStr20, value : Uint128, initiator : ByStr20)
+    (* Proceed if the following conditions are met: *)
+    (* 1) Contract is not paused *)
+    isPaused <- paused;
+    or_res = isPaused;
+    match or_res with
+    | False => 
+      bal <- balances[initiator];
+      match bal with
+      | Some b =>
+        can_do = uint128_le value b;
+        match can_do with
+        | True =>
+          (* subtract tokens from initiator and add it to "to" *)
+          new_initiator_bal = builtin sub b value;
+          balances[initiator] := new_initiator_bal;
+          (* Adds tokens to "to" address *)
+          to_bal <- balances[to];
+          new_to_bal = match to_bal with
+              | Some x => builtin add x value
+              | None => value
+          end;
+          balances[to] := new_to_bal;
+          e = {_eventname : "Transfer"; sender : initiator; recipient : to; amount : value};
+          event e;
+          (* Also send a message out to the initiator in case a callback action needs to be taken. *)
+          msg = {_tag : "TransferSuccessCallBack"; _recipient : initiator; _amount : zero;
+                 sender : initiator; recipient : to; amount : value};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          (* balance not sufficient. *)
+        end
+      | None =>
+       (* no balance record, can't transfer *)
+      end
+    | True =>
+    end
+end
+
+(* Transfer value number of tokens on behalf of the initiator to the to address *)
+(* Transfer can only be done when the contract is not paused. *)
+transition transferFrom (from : ByStr20, to : ByStr20, value : Uint128, initiator : ByStr20)
+    (* Proceed if the following conditions are met: *)
+    (* 1) Contract is not paused *)
+  isPaused <- paused;
+  or_res = isPaused;
+  match or_res with
+  | False => 
+    bal <- balances[from];
+    (* Check if initiator has been authorized by "from" *)
+    sender_allowed_from <- allowed[from][initiator];
+    match bal with
+    | Some a =>
+      match sender_allowed_from with
+      | Some b =>
+        (* We can only transfer the minimum of available or authorized tokens *)
+        t = min_int a b;
+        can_do = uint128_le value t;
+        match can_do with
+        | True =>
+          (* tokens is what we should subtract from "from" and add to "to" *)
+          new_from_bal = builtin sub a value;
+          balances[from] := new_from_bal;
+          to_bal <- balances[to];
+          match to_bal with
+          | Some tb =>
+            new_to_bal = builtin add tb value;
+            balances[to] := new_to_bal
+          | None =>
+            (* "to" has no balance. So just set it to tokens *)
+            balances[to] := value
+          end;
+          (* reduce "allowed" by "tokens" *)
+          new_allowed = builtin sub b value;
+          allowed[from][initiator] := new_allowed;
+          e = {_eventname : "TransferFromSuccess"; recipient : to; sender : from; initiator : initiator; amount : value};
+          event e;
+          (* Also send a message out to the initiator in case a callback action needs to be taken. *)
+          msg = {_tag : "TransferFromSuccessCallBack"; _recipient : initiator; _amount : zero;
+                 sender : from; recipient : to; amount : value };
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+        end
+        | None =>
+        end
+      | None =>
+	  end
+  | True => 
+  end
+end
+
+(* A transition for default operators to send tokens. *)
+(* Only non-revoked default operators can invoke this transition. *)
+(* Default operators can transfer any amount on behalf of a token holder. *)
+(* OperatorSend can only be done when the contract is not paused. *)
+transition operatorSend (from : ByStr20, to : ByStr20, value : Uint128, initiator : ByStr20)
+  (* Proceed if the following conditions are met: *)
+  (* 1) Contract is not paused *)
+  isPaused <- paused;
+  or_res = isPaused;
+  match or_res with
+  | True  =>  
+  | False => 
+    (* Proceed if the initiator is a non-revoked default operator *)
+    isDefaultOperator =  isDefaultOperator f_eq initiator default_operators;
+    isRevokedOperator <- exists revokedDefaultOperators[from][initiator];
+    isAllowed = let isNotRevokedOperator = negb isRevokedOperator in andb  isNotRevokedOperator isDefaultOperator;
+    match isAllowed with
+    | False =>
+    | True  =>
+      bal <- balances[from];
+      match bal with
+      | Some b =>
+        can_do = uint128_le value b;
+        match can_do with
+        | True =>
+          (* subtract tokens from from and add it to "to" *)
+          new_from_bal = builtin sub b value;
+          balances[from] := new_from_bal;
+        
+          (* Adds tokens to "to" address *)
+          to_bal <- balances[to];
+          new_to_bal =  match to_bal with
+                        | Some x => builtin add x value
+                        | None => value
+                        end;
+          balances[to] := new_to_bal;
+          e = {_eventname : "OperatorSendSuccess"; operator : initiator; from : from; recipient : to; amount : value};
+          event e;
+          msg = {_tag : "operatorSendSuccess"; _recipient : initiator; _amount : zero;
+                 operator : initiator; from : from; recipient : to; amount : value};
+          msgs = one_msg msg;
+          send msgs
+          | False =>
+            (* balance not sufficient. *)
+          end
+      | None =>
+        (* no balance record, can't transfer *)
+      end
+    end
+  end
+end

@@ -1,0 +1,305 @@
+scilla_version 0
+
+import BoolUtils ListUtils PairUtils
+
+library OceanRumbleMinionToken
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+Cons {Message} msg nil_msg
+
+let checkContractOwner =
+    fun (msgSender: ByStr20) =>
+    fun (contractOwner: ByStr20) =>
+        builtin eq msgSender contractOwner
+
+let isTokenOwner =
+    fun (msgSender: ByStr20) =>
+    fun (tokenId: Uint256) =>
+    fun (tokenOwnerMap_tmp : Map (Uint256) (ByStr20)) =>
+        let tokenOwner = builtin get tokenOwnerMap_tmp tokenId in
+        match tokenOwner with
+        | None => False
+        | Some val =>
+            builtin eq val msgSender
+        end
+
+let verifyOwnerMsg =
+    fun (msg: ByStr) =>
+    fun (sig: ByStr64) =>
+    fun (pubk: ByStr33) =>
+        builtin schnorr_verify pubk msg sig
+
+let isApproved =
+    fun (msgSender: ByStr20) =>
+    fun (tokenID: Uint256) =>
+    fun (approvalMap_tmp: Map (Uint256) (ByStr20)) =>
+        let val = builtin get approvalMap_tmp tokenID in
+        match val with
+        | None => False
+        | Some val =>
+            builtin eq val msgSender
+        end
+
+let isApprovedForAll =
+    fun (msgSender: ByStr20) =>
+    fun (tokenOwner: ByStr20) =>
+    fun (operatorMap: Map (ByStr20) (Map (ByStr20) (Bool))) =>
+        let m = builtin get operatorMap tokenOwner in
+        match m with
+        | None => False
+        | Some val =>
+            let check_list = builtin get val msgSender in
+            match check_list with
+            | None => False
+            | Some is_sender_approved =>
+                match is_sender_approved with
+                | True => True
+                | False => False
+                end
+            end
+        end
+
+let isApprovedOrOwner =
+    fun (isOwner: Bool) =>
+    fun (isApproved: Bool) =>
+    fun (isApprovedForAll: Bool) =>
+        let isOwnerOrApproved =  orb isOwner isApproved in
+        orb isOwnerOrApproved isApprovedForAll
+
+let makeErrorEvent =
+    fun (location: String) =>
+    fun (errorCode: Uint32) =>
+        {_eventname: "Error"; raisedAt: location; code: errorCode }
+
+let code_success = Uint32 0
+let code_failure = Uint32 1
+let code_not_authorized = Uint32 2
+let code_not_found = Uint32 4
+let code_bad_request = Uint32 5
+let code_token_exists = Uint32 6
+let code_unexpected_error = Uint32 9
+
+contract OceanRumbleMinionToken
+(contractOwner: ByStr20)
+
+field serverPubKey: Option ByStr33 = None {ByStr33}
+field tokenOwnerMap: Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field ownedTokenCount: Map ByStr20 Uint256 = Emp ByStr20 Uint256
+field tokenApprovals: Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field operatorApprovals: Map ByStr20 (Map ByStr20 Bool) = Emp ByStr20 (Map ByStr20 Bool)
+
+transition balanceOf(address: ByStr20)
+    optionBal <- ownedTokenCount[address];
+    balance = match optionBal with
+    | Some bal => bal
+    | None => Uint256 0
+    end;
+    e = {_eventname: "balanceOf"; bal: balance};
+    event e
+end
+
+transition ownerOf(tokenId: Uint256)
+    someVal <- tokenOwnerMap[tokenId];
+    match someVal with
+    | Some val =>
+        e = {_eventname: "ownerOf"; id: tokenId; owner: val};
+        event e
+    | None =>
+        e = let raisedAt = "ownerOf" in makeErrorEvent raisedAt code_not_found;
+        event e
+    end
+end
+
+transition mint(to: ByStr20, tokenId: Uint256)
+    isAuthorized = checkContractOwner contractOwner _sender;
+    match isAuthorized with
+    | True =>
+        currentTokenOwnerMap <- tokenOwnerMap;
+        tokenExist <- exists tokenOwnerMap[tokenId];
+        match tokenExist with
+        | True =>
+            e = let raisedAt = "mint" in makeErrorEvent raisedAt code_token_exists;
+            event e
+        | False =>
+            tokenOwnerMap[tokenId] := to;
+            userCnt <- ownedTokenCount[to];
+            match userCnt with
+            | Some val =>
+                newVal= let one = Uint256 1 in builtin add val one;
+                ownedTokenCount[to] := newVal
+            | None =>
+                newVal = Uint256 1;
+                ownedTokenCount[to] := newVal
+            end;
+            e = {_eventname: "Mint successful"; by: _sender; recipient: to; token: tokenId};
+            event e
+        end
+    | False =>
+        e = let raisedAt = "mint" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+end
+
+transition transferFrom(from: ByStr20, to: ByStr20, tokenId: Uint256)
+    copy_tokenOwnerMap <- tokenOwnerMap;
+    copy_tokenApprovals <- tokenApprovals;
+    copy_operatorApproval <- operatorApprovals;
+
+    getTokenOwner <- tokenOwnerMap[tokenId];
+    match getTokenOwner with
+    | None =>
+        e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_not_found;
+        event e
+
+    | Some tokenOwner =>
+        checkOwner = isTokenOwner _sender tokenId copy_tokenOwnerMap;
+        checkApproved = isApproved _sender tokenId copy_tokenApprovals;
+        checkApprovedForAll = isApprovedForAll _sender tokenOwner copy_operatorApproval;
+        isFromTokenOwner = builtin eq tokenOwner from;
+        match isFromTokenOwner with
+        | False =>
+            e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_bad_request;
+            event e
+        | True =>
+            isAuthorized = isApprovedOrOwner checkOwner checkApproved checkApprovedForAll;
+
+            match isAuthorized with
+            | True =>
+                match checkApproved with
+                | True =>
+                    delete tokenApprovals[tokenId]
+                | False =>
+                end;
+                tokenOwnerMap[tokenId] := to;
+                curr_otc <- ownedTokenCount;
+                somePrevBal <- ownedTokenCount[from];
+                match somePrevBal with
+                | Some prevBal =>
+                    newBal  = let one = Uint256 1 in builtin sub prevBal one;
+                    ownedTokenCount[from] := newBal
+                | None =>
+                    e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_unexpected_error;
+                    event e
+                end;
+                userCnt <- ownedTokenCount[to];
+                newVal = let one = Uint256 1 in match userCnt with
+                | Some val =>
+                    (* Add to existing value *)
+                    builtin add val one
+                | None => one
+                end;
+                ownedTokenCount[to] := newVal;
+                e = {_eventname: "transferFrom successful"; from: _sender; recipient: to; token: tokenId};
+                event e
+            | False =>
+                e = let raisedAt = "transferFrom" in makeErrorEvent raisedAt code_not_authorized;
+                event e
+            end
+        end
+    end
+end
+
+transition approve(to: ByStr20, tokenId: Uint256)
+    copy_tokenOwnerMap <- tokenOwnerMap;
+    copy_operatorApproval <- operatorApprovals;
+    getTokenOwner <- tokenOwnerMap[tokenId];
+    match getTokenOwner with
+    | None =>
+        e = let raisedAt = "approve" in makeErrorEvent raisedAt code_not_found;
+        event e
+    | Some tokenOwner =>
+        checkApprovedForAll = isApprovedForAll _sender tokenOwner copy_operatorApproval;
+        checkOwner = isTokenOwner _sender tokenId copy_tokenOwnerMap;
+        isAuthorized = orb checkApprovedForAll checkOwner;
+        match isAuthorized with
+        | True =>
+            tokenApprovals[tokenId] := to;
+            e = {_eventname: "Approve successful"; from: _sender; approvedTo: to; token: tokenId};
+            event e
+        | False =>
+            e = let raisedAt = "approve" in makeErrorEvent raisedAt code_not_authorized;
+            event e
+        end
+    end
+end
+
+transition setApprovalForAll(to: ByStr20, approved: Bool)
+    copy_operatorApproval <- operatorApprovals;
+    isValidOperation = let check = builtin eq _sender to in negb check;
+    match isValidOperation with
+    | True =>
+        operatorApprovals[_sender][to] := approved;
+        approvedStr = bool_to_string approved;
+        e = {_eventname: "setApprovalForAll successful"; from: _sender; recipient: to; status: approvedStr};
+        event e
+    | False =>
+        e = let raisedAt = "setApprovalForAll" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+end
+
+transition setServerPubKey(pubk: ByStr33)
+    isAuthorized = checkContractOwner contractOwner _sender;
+    match isAuthorized with
+    | True =>
+        tmp = Some {ByStr33} pubk;
+        serverPubKey := tmp;
+        e = {_eventname: "set_server_public_key_success"; by: _sender};
+        event e
+    | False =>
+        e = let raisedAt = "setOwnerPubKey" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+end
+
+transition mintFromServer(to: ByStr20, minionId: ByStr48, userId: ByStr48, serverKey: ByStr36, sig: ByStr64, timestamp: ByStr26)
+    pubKey <- serverPubKey;
+    match pubKey with
+    | None =>
+        e = let raisedAt = "mintFromServer" in makeErrorEvent raisedAt code_not_found;
+        event e
+    | Some pubk =>
+        msg = let msgByStrX = let tmp2 =
+                    let tmp1 = builtin concat serverKey minionId in
+                    builtin concat tmp1 userId in
+                    builtin concat tmp2 timestamp in
+                    builtin to_bystr msgByStrX;
+        isFromServer = builtin schnorr_verify pubk msg sig;
+        match isFromServer with
+        | True =>
+            currentTokenOwnerMap <- tokenOwnerMap;
+            tokenIdByStr32 = builtin sha256hash msg;
+            tokenId = builtin to_uint256 tokenIdByStr32;
+            tokenExist <- exists tokenOwnerMap[tokenId];
+            match tokenExist with
+            | True =>
+                e = let raisedAt = "mint" in makeErrorEvent raisedAt code_token_exists;
+                event e
+            | False =>
+                tokenOwnerMap[tokenId] := to;
+                userCnt <- ownedTokenCount[to];
+                match userCnt with
+                | Some val =>
+                    newVal= let one = Uint256 1 in builtin add val one;
+                    ownedTokenCount[to] := newVal
+                | None =>
+                    newVal = Uint256 1;
+                    ownedTokenCount[to] := newVal
+                end;
+                logData = builtin to_string msg;
+                e = {_eventname: "MintFromServerSuccessful";
+                by: _sender;
+                recipient: to;
+                userId: userId;
+                minionId: minionId;
+                token: tokenId};
+                event e
+            end
+        | False =>
+            e = let raisedAt = "mint" in makeErrorEvent raisedAt code_not_authorized;
+            event e
+        end
+    end
+end

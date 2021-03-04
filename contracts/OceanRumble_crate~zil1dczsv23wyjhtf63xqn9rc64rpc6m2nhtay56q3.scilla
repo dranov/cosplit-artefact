@@ -1,0 +1,275 @@
+scilla_version 0
+
+import BoolUtils ListUtils PairUtils
+
+library OceanRumbleCrate
+
+(* constant value *)
+let const_one = Uint128 1
+let const_zero = Uint128 0
+let const_ten = Uint128 10
+let const_thousand = Uint128 1000
+let const_max_x = Uint128 1000
+let nil = Nil {Uint128}
+let true = True
+let false = False
+
+(* message codes *)
+let code_debug = Uint128 0
+let code_purchase_crate_success = Uint128 1
+let code_purchase_crate_failed = Uint128 2
+let code_set_crate_success = Uint128 3
+let code_set_crate_failed = Uint128 4
+let code_not_owner = Uint128 5
+let code_not_found_crate = Uint128 6
+let code_not_authorized = Uint128 7
+let code_public_key_not_found = Uint128 8
+let code_withdraw_success = Uint128 9
+
+(* default values *)
+
+
+(* standard methods *)
+let makeErrorEvent =
+    fun (location: String) =>
+    fun (errorCode: Uint128) =>
+        {_eventname: "Error"; raisedAt: location; code: errorCode }
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+let no_msg = Nil {Message}
+let gte =
+    fun (a : Uint128) =>
+    fun (b : Uint128) =>
+        let lt_res = builtin lt a b in
+        match lt_res with
+        | False => True
+        | True => False
+        end
+let lte =
+    fun (a : Uint128) =>
+    fun (b : Uint128) =>
+        let lt_res = builtin lt a b in
+        match lt_res with
+        | False =>
+            let eq_res = builtin eq a b in
+            eq_res
+        | True => True
+end
+let get_min_int =
+    fun (a : Uint128) =>
+    fun (b : Uint128) =>
+        let a_lt_b = builtin lt a b in
+        match a_lt_b with
+        | True => a
+        | False => b
+        end
+let sum_3_int =
+    fun (a : Uint128) =>
+    fun (b : Uint128) =>
+    fun (c : Uint128) =>
+        let sum = builtin add a b in
+        builtin add sum c
+let get_max_int =
+    fun (a : Uint128) =>
+    fun (b : Uint128) =>
+        let a_lt_b = builtin lt a b in
+        match a_lt_b with
+        | True => b
+        | False => a
+end
+let checkContractOwner =
+    fun (msgSender: ByStr20) =>
+    fun (contractOwner: ByStr20) =>
+        builtin eq msgSender contractOwner
+
+
+(* game type *)
+(* struct Crate {                    *)
+(*     Uint128 crate_id;             *)
+(*     String name;                  *)
+(*     Uint128 crate_original_price  *)
+(*     Uint128 crate_price          *)
+(*     Uint128 crate_value;          *)
+(*     Uint128 purchase_count;          *)
+(* }                                 *)
+type Crate =
+| Crate of String Uint128 Uint128 Uint128 Uint128
+(* name, original_price, price, value, purchase_count *)
+
+
+(* game methods *)
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+
+contract OceanRumbleCrate  (owner: ByStr20)
+field crates : Map Uint128 Crate = Emp Uint128 Crate
+field serverPubKey: Option ByStr33 = None {ByStr33}
+field purchase_history : Map ByStr20 (Map Uint128 Uint128) = Emp ByStr20 (Map Uint128 Uint128)
+field user_crate_map : Map ByStr20 (Map Uint128 Uint128) = Emp ByStr20 (Map Uint128 Uint128)
+
+transition setServerPubKey(pubk: ByStr33)
+    isAuthorized = checkContractOwner owner _sender;
+    match isAuthorized with
+    | True =>
+        tmp = Some {ByStr33} pubk;
+        serverPubKey := tmp;
+        e = {_eventname: "set_public_key_successful"; by: _sender};
+        event e
+    | False =>
+        e = let raisedAt = "setServerPubKey" in makeErrorEvent raisedAt code_not_authorized;
+        event e
+    end
+end
+
+transition purchaseCrate(userId: ByStr48, crateId: Uint128, itemId: ByStr48, serverKey: ByStr36, sig: ByStr64, amountPurchase: Uint128, timestamp: ByStr26)
+    pubKey <- serverPubKey;
+    match pubKey with
+    | None =>
+        e = let raisedAt = "mintFromServer" in makeErrorEvent raisedAt code_public_key_not_found;
+        event e
+    | Some pubk =>
+        msg = let msgByStrX = let tmp2 =
+                    let tmp1 = builtin concat serverKey itemId in
+                    builtin concat tmp1 userId in
+                    builtin concat tmp2 timestamp in
+                    builtin to_bystr msgByStrX;
+        is_from_server = builtin schnorr_verify pubk msg sig;
+        match is_from_server with
+        | False =>
+                e = let raisedAt = "purchaseCrate" in makeErrorEvent raisedAt code_not_authorized;
+                event e
+        | True =>
+            maybe_crate <- crates[crateId];
+            match maybe_crate with
+            | None =>
+                e = let raisedAt = "purchaseCrate" in makeErrorEvent raisedAt code_not_found_crate;
+                event e;
+                msg = {
+                    _tag: "";
+                    _recipient: _sender;
+                    _amount: const_zero;
+                    code: code_purchase_crate_failed
+                };
+                msgs = one_msg msg;
+                send msgs
+            | Some crate =>
+                match crate with
+                (* name, original_price, price, value, purchase_count *)
+                | Crate name originalPrice price value purchaseCount =>
+                    total_price = builtin mul price amountPurchase;
+                    can_purchase = gte _amount total_price;
+                    match can_purchase with
+                    | True =>
+                        maybe_user <- user_crate_map[_sender];
+                        match maybe_user with
+                        | None =>
+                            user = Emp Uint128 Uint128;
+                            user_crate_map[_sender][crateId] := const_one
+                        | Some user =>
+                            crate_number = builtin get user crateId;
+                            match crate_number with
+                            | None =>
+                                user_crate_map[_sender][crateId] := amountPurchase
+                            | Some number =>
+                                new_number = builtin add number amountPurchase;
+                                user_crate_map[_sender][crateId] := new_number
+                            end
+                        end;
+                        new_purchase_count = builtin add purchaseCount amountPurchase;
+                        price_adding = builtin div price const_thousand;
+                        new_price = builtin add price price_adding;
+                        new_crate = Crate name originalPrice new_price value new_purchase_count;
+
+                        crates[crateId] := new_crate;
+                        accept;
+                        e = {
+                            _eventname: "purchase_successful";
+                            from: _sender;
+                            crate_id: crateId;
+                            number_of_crate: amountPurchase;
+                            user_id: userId;
+                            item_id: itemId;
+                            timestamp: timestamp
+                        };
+                        event e;
+                        msg = {
+                            _tag: "";
+                            _recipient: _sender;
+                            _amount: const_zero;
+                            code: code_purchase_crate_success
+                        };
+                        msgs = one_msg msg;
+                        send msgs
+                    | False =>
+                        e = let raisedAt = "purchaseCrate" in makeErrorEvent raisedAt code_purchase_crate_failed;
+                        event e;
+                        msg = {
+                            _tag: "";
+                            _recipient: _sender;
+                            _amount: const_zero;
+                            code: code_purchase_crate_failed
+                        };
+                        msgs = one_msg msg;
+                        send msgs
+                    end
+                end
+            end
+        end
+    end
+end
+
+transition setCrate(crate_id: Uint128, crate_name: String, crate_price: Uint128, crate_value: Uint128)
+    is_owner = builtin eq owner _sender;
+    match is_owner with
+    | False =>
+        msg = {
+            _tag: "";
+            _recipient: _sender;
+            _amount: const_zero;
+            code: code_not_owner
+        };
+        msgs = one_msg msg;
+        send msgs
+    | True =>
+        (* name, original_price, price, value, purchase_count *)
+        new_crate = Crate crate_name crate_price crate_price crate_value const_zero;
+        crates[crate_id] := new_crate;
+        msg = {
+            _tag: "";
+            _recipient: _sender;
+            _amount: const_zero;
+            code: code_set_crate_success
+        };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+transition withdraw (request_amount: Uint128)
+    is_owner = builtin eq owner _sender;
+    match is_owner with
+  | False =>
+        msg = {
+            _tag: "";
+            _recipient: _sender;
+            _amount: const_zero;
+            code: code_not_owner
+        };
+        msgs = one_msg msg;
+        send msgs
+    | True =>
+        msg = {
+            _tag: "";
+            _recipient: _sender;
+            _amount: request_amount;
+            code: code_withdraw_success
+        };
+        msgs = one_msg msg;
+        send msgs
+    end
+end

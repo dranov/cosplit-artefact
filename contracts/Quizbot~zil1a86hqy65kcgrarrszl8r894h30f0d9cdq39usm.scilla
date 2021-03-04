@@ -1,0 +1,108 @@
+scilla_version 0
+
+library QuizBot
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+(* Error events *)
+type Error =
+  | CodeNotOwner
+  | CodeNotStarted
+  | CodeInsufficientBalance
+  | CodeWrongAnswer
+  
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner            => Int32 -1
+      | CodeNotStarted          => Int32 -2
+      | CodeInsufficientBalance => Int32 -3
+      | CodeWrongAnswer         => Int32 -4
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+let tt = True
+
+contract QuizBot
+(
+  contract_owner: ByStr20,
+  rewards: Uint128,
+  correct_answer_hash: ByStr32
+)
+
+field started: Bool = False
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsOwner(address: ByStr20)
+  is_owner = builtin eq address contract_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+procedure IsGameStarted()
+  current_status <- started;
+  match current_status with
+  | True =>
+  | False =>
+    err = CodeNotStarted;
+    ThrowError err
+  end
+end
+
+(* @dev: contract_owner only function. contract_owner can only set answer once *)
+transition DepositFund()
+  IsOwner _sender;
+  accept;
+  started := tt;
+  e = {_eventname: "DepositSuccess"; amount: _amount};
+  event e
+end
+
+transition WithdrawFund()
+  IsOwner _sender;
+  current_bal <- _balance;
+  e = {_eventname: "WithdrawSuccess"; amount: current_bal};
+  event e;
+  msg_to_sender = {_tag : ""; _recipient : _sender; _amount : current_bal};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Anyone can call this function. Disburse rewards for correct answer. *)
+transition Answer(user_answer: String)
+  IsGameStarted;
+  user_answer_hash = builtin sha256hash user_answer;
+  is_correct_answer = builtin eq user_answer_hash correct_answer_hash;
+  match is_correct_answer with
+  | True =>
+    current_bal <- _balance;
+    can_do = builtin lt _amount current_bal;
+    match can_do with
+    | True =>
+      e = {_eventname: "CorrectAnswer"; user_address: _sender; rewards: rewards};
+      event e;
+      msg_to_sender = {_tag : ""; _recipient : _sender; _amount : rewards};
+      msgs = one_msg msg_to_sender;
+      send msgs
+    | False =>
+      err = CodeInsufficientBalance;
+      ThrowError err
+    end
+  | False =>
+    err = CodeWrongAnswer;
+    ThrowError err
+  end
+end

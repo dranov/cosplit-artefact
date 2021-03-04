@@ -1,0 +1,770 @@
+scilla_version 0
+
+(* BlackJack contract *)
+
+import ListUtils
+
+(***************************************************)
+(*         Associated library        *)
+(***************************************************)
+library BlackJack
+
+
+type CardOwner =
+| Dealer
+| Player
+
+type CardStatus =
+(* proofs *)
+(* shows *)
+(* remainCount *)
+(* dealerCount *)    
+(* playerCount *)    
+| CardStatus of (Map (Uint32) (ByStr20)) (Map (Uint32) (CardOwner)) Uint32 Uint32 Uint32
+
+
+type GameStatus =
+| Shuffle
+| WaitDealerDeal
+| PlayerTurn
+| WaitDealerHit
+| WaitDealerShow
+| EndGame
+
+type PlayerDecision =
+| WrongMove
+| Stand
+| Hit
+let player_decision_invalid = WrongMove
+let player_decision_stand = Stand
+let player_decision_hit = Hit
+
+type Game =
+| Game of ByStr20 Uint128 GameStatus ByStr32 CardStatus BNum
+
+
+(* struct Game {                        *)
+(*   ByStr20 gambler;                     *)
+(*   Uint128 amount;                       *)
+(*   GameStatus status;                     *)
+(*   ByStr32 shuffleCommit;                   *)
+(*   CardStatus cardStatus;                 *)
+(*   BNum lastBlockNumber;                 *)
+(* }                              *)
+
+
+(*                          *)
+let card_owner_dealer = Dealer
+let card_owner_player = Player
+
+let game_status_betting = Shuffle
+let game_status_wait_dealer_deal = WaitDealerDeal
+let game_status_player_turn = PlayerTurn
+let game_status_wait_dealer_hit = WaitDealerHit
+let game_status_wait_dealer_show = WaitDealerShow
+let game_status_end_game = EndGame
+
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let not_owner_code = Int32 1
+let invalid_bet_commit_code = Int32 2
+let bet_accepted_code = Int32 3
+let invalid_reveal_code = Int32 4
+let reveal_accepted_code = Int32 5
+
+let err_not_exist_commit_code = Int32 6
+let err_exist_commit_code = Int32 7
+
+let err_not_state_shuffle_code = Int32 8
+let err_not_dealer_action_code = Int32 9
+
+let invalid_deal_code = Int32 10
+let accepted_deal_code = Int32 11
+
+let err_not_player_action_code = Int32 12
+let accepted_player_action_code = Int32 13
+
+let invalid_player_hit_code = Int32 14
+let accepted_player_hit_code = Int32 15
+
+let invalid_deal_show_code = Int32 16
+let accepted_dealer_show_code = Int32 17
+
+let same_status_code = Int32 18
+let changed_status_code = Int32 19
+
+let err_withdraw_funds_code = Int32 555
+let accepted_withdraw_funds_code = Int32 777
+
+let not_implement_code = Int32 -1
+let err_game_not_found_code = Int32 -2
+let unreachable_code = Int32 -255
+
+
+let one128 = Uint128 1
+let zero = Uint32 0
+let one = Uint32 1
+let two = Uint32 2
+let three = Uint32 3
+let four = Uint32 4
+let five = Uint32 5
+let six = Uint32 6
+let seven = Uint32 7
+let eight = Uint32 8
+let nine = Uint32 9
+let ten = Uint32 10
+let eleven = Uint32 11
+let twelve = Uint32 12
+let thirteen  = Uint32 13
+let blackjack  = Uint32 21
+
+
+let invalid_card = Uint32 254
+let max_card = Uint32 52
+
+let modulo256 = Uint256 51
+let zero256 = Uint256 0
+
+let is_same_bool =
+  fun (a: Bool) =>
+  fun (b: Bool) =>    
+    match a with 
+    | True => 
+      match b with 
+      | True => True
+      | False => False
+      end
+    | False =>
+      match b with 
+      | True => False
+      | False => True
+      end
+    end
+
+let hash_modulo =
+  fun (h : ByStr32) =>
+  fun (modulo : Uint256) =>
+    let c = builtin to_uint256 h in
+    let r = builtin rem c modulo in
+    let u = builtin to_uint32 r in
+    match u with
+    | Some v => v
+    | None => zero  (*never reach this*)
+    end
+    
+let uint32_to_256 =     
+    fun (r : Uint32) => 
+      let u = builtin to_uint256 r in
+      match u with
+      | Some v => v
+      | None => 
+        let one256 = Uint256 0 in
+          one256  (*never reach this*)
+      end
+
+let uint256_to_32 =     
+    fun (r : Uint256) => 
+      let u = builtin to_uint32 r in
+      match u with
+      | Some v => v
+      | None => 
+        let one = Uint32 0 in
+          one  (*never reach this*)
+      end      
+
+let proof_list_length =
+   fun (l : List (Pair (Uint32) (ByStr20))) =>
+   let folder = @list_foldl (Pair (Uint32) (ByStr20)) Uint32 in
+   let init = Uint32 0 in
+   let iter =
+     fun (z : Uint32) =>
+     fun (h : (Pair (Uint32) (ByStr20))) =>
+       let one = Uint32 1 in
+       builtin add one z
+   in
+     folder iter init l 
+     
+let create_card_status =
+  fun (proofs : Map (Uint32) (ByStr20)) =>
+    let eh = Emp (Uint32) (CardOwner) in
+    let l = builtin to_list proofs in
+    let mc = proof_list_length l in
+    let cs = CardStatus proofs eh mc zero zero in
+    cs
+    
+let card_list_to_map =
+   fun (l : List (ByStr20)) =>
+   let folder = @list_foldl (ByStr20) (Pair (Uint32) (Map (Uint32) (ByStr20))) in
+   let value_init = Emp Uint32 ByStr20 in
+   let index_init = Uint32 0 in
+   let init = Pair {(Uint32) (Map (Uint32) (ByStr20))} index_init value_init in
+   let iter =
+     fun (z : Pair (Uint32) (Map (Uint32) (ByStr20))) =>
+     fun (h : ByStr20) =>
+       match z with
+       | Pair i v =>
+         let next_i = builtin add one i in
+         let next_v = builtin put v i h in
+         Pair {(Uint32) (Map (Uint32) (ByStr20))} next_i next_v
+       end
+   in
+     folder iter init l 
+     
+let calculate_proof_map =
+   fun (l : List (Pair (ByStr20) (Uint32))) =>
+   let folder = @list_foldl (Pair (ByStr20) (Uint32)) (Map (ByStr20) (Uint32)) in
+   let init = Emp ByStr20 Uint32 in
+   let iter =
+     fun (z : Map (ByStr20) (Uint32)) =>
+     fun (h : Pair (ByStr20) (Uint32)) =>
+       match h with
+       | Pair s v =>
+         (*TODO add salt for card value*)
+         let h2 = builtin ripemd160hash v in
+         let sh = builtin concat s h2 in
+         let c = builtin ripemd160hash sh in
+         builtin put z c v
+       end
+       
+   in
+     folder iter init l    
+     
+let empty_proof = builtin ripemd160hash zero
+let get_proof =     
+  fun (deck : (Map (Uint32) (ByStr20))) =>
+  fun (slot : Uint32) =>
+    let c = builtin get deck slot in
+    match c with
+    | Some v => v
+    | None => empty_proof
+    end   
+
+
+let shuffle_one = 
+  fun (p : Pair (Map (Uint32) (ByStr20)) (Uint256)) =>
+    match p with
+    | Pair d e =>
+      let is_end = builtin eq e zero256 in
+      match is_end with
+      | True => p
+      | False =>
+        let ne = builtin div e modulo256 in
+        let r = builtin rem e modulo256 in
+        let r0 = uint256_to_32 r in
+        let r1 = builtin add r0 one in
+    
+        let v0 = get_proof d r0 in
+        let v1 = get_proof d r1 in
+      
+        let d1 = builtin remove d r0 in
+        let d2 = builtin remove d1 r1 in
+        let d3 = builtin put d2 r0 v1 in
+        let d4 = builtin put d3 r1 v0 in
+        Pair {(Map (Uint32) (ByStr20)) (Uint256)} d4 ne
+      end
+    end
+    
+
+let shuffle_proofs = 
+  fun (d : (Map (Uint32) (ByStr20))) =>
+  fun (e : Uint256) =>
+    let p = Pair {(Map (Uint32) (ByStr20)) (Uint256)} d e in
+    let p1 = shuffle_one p in
+    let p2 = shuffle_one p1 in
+    let p3 = shuffle_one p2 in
+    let p4 = shuffle_one p3 in
+    let p5 = shuffle_one p4 in
+    let p6 = shuffle_one p5 in
+    let p7 = shuffle_one p6 in
+    let p8 = shuffle_one p7 in
+    let p9 = shuffle_one p8 in
+    let p10 = shuffle_one p9 in
+    let p11 = shuffle_one p10 in
+    let p12 = shuffle_one p11 in
+    let p13 = shuffle_one p12 in
+    let p14 = shuffle_one p13 in
+    let p15 = shuffle_one p14 in
+    let p16 = shuffle_one p15 in
+    let p17 = shuffle_one p16 in
+    let p18 = shuffle_one p17 in
+    let p19 = shuffle_one p18 in
+    let p20 = shuffle_one p19 in
+    let p21 = shuffle_one p20 in
+    let p22 = shuffle_one p21 in
+    let p23 = shuffle_one p22 in
+    let p24 = shuffle_one p23 in
+    let p25 = shuffle_one p24 in
+    let p26 = shuffle_one p25 in
+    let p27 = shuffle_one p26 in
+    let p28 = shuffle_one p27 in
+    let p29 = shuffle_one p28 in
+    let p30 = shuffle_one p29 in
+    match p30 with
+    | Pair d _ => d
+    end
+
+
+let is_dealer_action = 
+  fun (status : GameStatus) =>
+  fun (action : Uint32) =>
+    let isa0 = builtin eq action zero in
+    match status with
+    | WaitDealerDeal => isa0
+    | _ =>
+      let isa1 = builtin eq action one in
+      match status with
+      | WaitDealerHit => isa1
+      | _ =>
+        let isa2 = builtin eq action two in
+        match status with
+        | WaitDealerShow => isa2
+        | _ => False
+        end
+      end
+    end
+
+let to_player_decision = 
+  fun (status : GameStatus) =>
+  fun (action : Uint32) =>
+    match status with
+    | PlayerTurn => 
+      let isa0 = builtin eq action zero in
+      match isa0 with
+      | True => player_decision_stand
+      | False =>
+         let isa1 = builtin eq action one in
+         match isa1 with
+         | True => player_decision_hit
+         | False => player_decision_invalid
+         end
+      end
+    | _ => player_decision_invalid
+    end
+
+    
+let show_card = 
+  fun (proofCards : (Map (Uint32) (ByStr20))) =>
+  fun (at : Uint32) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>
+      let proof = get_proof proofCards at in
+      let valid = builtin eq proof empty_proof in
+      match valid with
+      | True => invalid_card
+      | False =>
+        let c = builtin get cardMap proof in
+        match c with
+        | None => invalid_card
+        | Some v => v
+        end
+      end
+     
+type DealResult =
+| DealFailed
+| DealSuccess of CardStatus
+
+let deal_result_failed = DealFailed
+let count_card = 
+  fun (dc : Uint32) =>
+  fun (pc : Uint32) =>      
+  fun (o : CardOwner) =>
+    match o with
+    | Dealer =>
+      let n = builtin add dc one in
+      let r = Pair {Uint32 Uint32} n pc in
+      r
+    | Player =>
+      let n = builtin add pc one in
+      let r = Pair {Uint32 Uint32} dc n in
+      r
+    end
+    
+let deal_to = 
+  fun (cs : CardStatus) =>
+  fun (at : Uint32) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>
+  fun (o : CardOwner) =>
+    match cs with
+    | CardStatus p s rc dc pc =>
+      let card = show_card p at cardMap in      
+      let valid_right = builtin lt card max_card in
+      match valid_right with
+      | False => deal_result_failed
+      | True =>
+        let cardExist = builtin contains s card in
+        match cardExist with
+        | True => deal_result_failed
+        | False =>
+          let ns = builtin put s card o in
+          let nrc = builtin sub rc one in
+          let dpc = count_card dc pc o in
+          match dpc with
+          | Pair ndc npc =>
+            let ncs = CardStatus p ns nrc ndc npc in
+            let r = DealSuccess ncs in
+            r
+          end
+        end
+      end
+    end  
+    
+
+(*show 1 for dealer and 2 for player*)
+let first_deal = 
+  fun (cs : CardStatus) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>
+    let d1 = deal_to cs zero cardMap card_owner_dealer in
+    match d1 with
+    | DealFailed => d1
+    | DealSuccess cs1 =>
+      let d2 = deal_to cs1 one cardMap card_owner_player in
+      match d2 with
+      | DealFailed => d2
+      | DealSuccess cs2 =>
+        let d3 = deal_to cs2 two cardMap card_owner_player in
+        d3
+      end
+    end
+    
+let player_hit = 
+  fun (cs : CardStatus) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>
+    match cs with
+    | CardStatus p s rc dc pc =>
+      let at = builtin add dc pc in
+      let d1 = deal_to cs at cardMap card_owner_player in
+      d1
+    end
+    
+
+let filter_player_card =
+  fun (p : Pair (Uint32) (CardOwner)) =>
+    match p with
+    | Pair a b =>
+      match b with
+      | Player => True
+      | _ => False
+      end
+    end   
+    
+let filter_dealer_card =
+  fun (p : Pair (Uint32) (CardOwner)) =>
+    match p with
+    | Pair a b =>
+      match b with
+      | Dealer => True
+      | _ => False
+      end
+    end 
+    
+let get_cards =
+  fun (cs : (Map (Uint32) (CardOwner))) =>
+  fun (o : CardOwner) =>
+    let l = builtin to_list cs in
+    let deck_card_type = @list_filter (Pair (Uint32) (CardOwner)) in
+    match o with
+    | Dealer =>
+      deck_card_type filter_dealer_card l
+    | Player =>
+      deck_card_type filter_player_card l
+    end
+    
+type ScoreStatus =
+| ScoreStatus of Bool Uint32 Uint32
+| ScoreBust
+let score_bust = ScoreBust
+
+let check_bust =
+  fun (ha : Bool) =>
+  fun (sv : Uint32) =>
+  fun (hv : Uint32) =>
+    let sb = builtin lt blackjack sv in
+    match sb with
+    | True => score_bust
+    | False =>
+      let hb = builtin lt blackjack hv in
+      match hb with
+      | True => 
+        ScoreStatus ha sv sv
+      | False =>
+        ScoreStatus ha sv hv
+      end
+    end
+let trunc_card_value =
+  fun (n : Uint32) =>
+    let o = builtin lt ten n in
+    match o with
+    | True => ten
+    | False => n
+    end
+let count_score =
+  fun (cs : (Map (Uint32) (CardOwner))) =>
+  fun (o : CardOwner) =>
+    let l = get_cards cs o in
+    let folder = @list_foldl (Pair (Uint32) (CardOwner)) ScoreStatus in
+    let b = False in
+    let init = ScoreStatus b zero zero in
+    let iter =
+      fun (z : ScoreStatus) =>
+      fun (h : (Pair (Uint32) (CardOwner))) =>
+        match h with
+        | Pair v _ =>
+          let n = builtin div v four in
+          let isa = builtin eq n twelve in
+          match z with
+          | ScoreStatus ha sv hv =>
+            match isa with
+            | True =>
+              match ha with
+              | True =>
+                let nsv = builtin add sv one in
+                let nhv = builtin add hv one in
+                check_bust ha nsv nhv
+              | False =>
+                let nsv = builtin add sv one in
+                let nhv = builtin add hv eleven in
+                let t = True in
+                check_bust t nsv nhv
+              end
+            | False =>
+              let nn =  builtin add n two in
+              let nnn = trunc_card_value nn in
+              let nsv = builtin add sv nnn in
+              let nhv = builtin add hv nnn in
+              
+              check_bust ha nsv nhv
+            end
+          | ScoreBust => z
+          end
+        end
+    in
+      folder iter init l
+
+
+
+let dealer_draw = 
+  fun (cs : CardStatus) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>  
+    match cs with
+    | CardStatus p s rc dc pc =>
+      let dscore = count_score s card_owner_dealer in
+      match dscore with
+      | ScoreStatus _ _ hs =>
+        let sixteen = Uint32 16 in
+        let done =  builtin lt sixteen hs in
+        match done with
+        | True =>
+          DealSuccess cs
+        | False =>
+          let at = builtin add dc pc in
+          let d1 = deal_to cs at cardMap card_owner_dealer in
+          d1
+        end
+      | ScoreBust =>
+        DealSuccess cs
+      end      
+    end
+
+let dealer_draw_max = 
+  fun (cs : CardStatus) =>
+  fun (cardMap : Map (ByStr20) (Uint32)) =>  
+    let d1 = dealer_draw cs cardMap in
+    match d1 with
+    | DealFailed => d1
+    | DealSuccess cs1 =>
+      let d2 = dealer_draw cs1 cardMap in    
+      match d2 with
+      | DealFailed => d2
+      | DealSuccess cs2 =>
+        dealer_draw cs2 cardMap
+      end
+    end
+
+type Result =
+| DealerWin
+| PlayerWin
+| DrawGame
+let result_dealer_win = DealerWin
+let result_player_win = PlayerWin
+let result_draw_game = DrawGame
+
+let is_blackjack = 
+  fun (s : Uint32) =>
+  fun (c : Uint32) =>
+    let tc = builtin eq c two in
+    match tc with
+    | False => False
+    | True =>
+      builtin eq s blackjack
+    end
+
+let judge_winner = 
+  fun (cs : CardStatus) =>
+    match cs with
+    | CardStatus p s rc dc pc =>
+      let pscore = count_score s card_owner_player in
+      let dscore = count_score s card_owner_dealer in
+
+      match pscore with
+      | ScoreBust => result_dealer_win
+      | ScoreStatus pha psv phv =>
+        match dscore with
+        | ScoreBust => result_draw_game
+        | ScoreStatus dha dsv dhv =>
+          let isp21 = is_blackjack phv pc in
+          let isd21 = is_blackjack dhv dc in
+          match isp21 with
+          | True =>            
+            match isd21 with
+            | True => result_draw_game
+            | False => result_player_win
+            end
+          | False =>
+            match isd21 with
+            | True => result_dealer_win
+            | False =>
+              let d = builtin eq phv dhv in
+              match d with
+              | True => result_draw_game
+              | False =>
+                let dw = builtin lt phv dhv in
+                match dw with
+                | True => result_dealer_win
+                | False => result_player_win
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+let can_bet = 
+  fun (o: Bool) =>
+  fun (am: Uint128) =>
+  fun (mi: Uint128) =>
+  fun (mx: Uint128) =>
+  fun (bl: Uint128) =>
+  fun (lk: Uint128) =>
+    match o with
+    | False => False
+    | True =>
+      let ub = builtin lt am mi in
+      match ub with 
+      | True => False
+      | False =>
+        let ob = builtin lt mx am in
+        match ob with
+        | True => False
+        | False =>
+          let nlk = builtin add lk am in
+          let obl = builtin lt bl nlk in
+          match obl with
+          | True => False
+          | False => True
+          end
+        end
+      end
+    end
+    
+(***************************************************)
+(*       The contract definition       *)
+(***************************************************)
+
+contract BlackJack
+(owner: ByStr20)
+
+field openForBet : Bool = False
+
+field lockedInBets : Uint128 = Uint128 0
+
+field minBet : Uint128 = Uint128 1000000000
+
+field maxBet : Uint128 = Uint128 10000000000000
+
+field nonce: Uint128 = Uint128 0
+
+(* gameRecord will store a Map of Games              *)
+field gameRecord: Map Uint128 Game
+          = Emp Uint128 Game
+
+(* commitRecord will store a Map of commit and Game              *)
+field commitRecord: Map ByStr32 Uint128
+          = Emp ByStr32 Uint128
+
+field debug: ScoreStatus = score_bust
+field testHash: ByStr20 = empty_proof
+
+field testHash40: ByStr40 = builtin concat empty_proof empty_proof
+field testUint256: Uint256 = Uint256 0
+
+
+transition callDebug ()
+  d = Emp (Uint32) (CardOwner);
+  a = builtin mul twelve four;
+  d1 = builtin put d a card_owner_player;
+
+  b = builtin mul ten four;
+  d2 = builtin put d1 b card_owner_player;
+
+  score = count_score d2 card_owner_player;
+  debug := score;
+  msg = {_tag : "Main"; _recipient : _sender; _amount : Uint128 0; code : bet_accepted_code};
+  msgs = one_msg msg;
+  send msgs  
+end
+
+
+
+(*TODO check signature data*)
+transition playerBet (proofOfCards: (List (ByStr20)), shuffleCommit: ByStr32)
+  lk <- lockedInBets;
+
+  cb = True;
+  match cb with
+  | False =>
+    msg = {_tag : "Main"; _recipient : _sender; _amount : Uint128 0; code : invalid_bet_commit_code};
+    msgs = one_msg msg;
+    send msgs
+  | True =>
+    cm <- commitRecord[shuffleCommit];
+    match cm with
+    | Some _ =>
+      msg = {_tag : "Main"; _recipient : _sender; _amount : Uint128 0; code : err_exist_commit_code};
+      msgs = one_msg msg;
+      send msgs
+    | None =>
+      accept; 
+
+      blk <- & BLOCKNUMBER;
+      nlk = builtin add lk _amount;
+      lockedInBets := nlk;
+
+      n <- nonce;
+      nid = builtin add n one128;
+      nonce := nid;
+      
+      eh = Emp (Uint32) (CardOwner);
+      pc = card_list_to_map proofOfCards;
+
+      msg = {_tag : "Main"; _recipient : _sender; _amount : Uint128 0; code : err_exist_commit_code};
+      msgs = one_msg msg;
+      send msgs
+    end
+  end
+end
+
+
+(*TODO*)
+(*Refund transaction by 3 reasons*)
+(*Player not give action after 20 blocks - dealer win*)
+(*Dealer not give action after 20 blocks - player win*)
+(*Randao not give action after 20 blocks - draw game*)
+transition refundBet (shuffleCommit: ByStr32)
+  msg = {_tag : "Main"; _recipient : _sender; _amount : Uint128 0; code : not_implement_code};
+  msgs = one_msg msg;
+  send msgs
+end

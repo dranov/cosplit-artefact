@@ -1,0 +1,146 @@
+
+scilla_version 0
+
+import BoolUtils
+
+library ResolverLib
+
+let nilMessage = Nil {Message}
+
+let oneMsg =
+  fun(msg: Message) =>
+    Cons {Message} msg nilMessage
+
+let eOwnerSet =
+  fun(address: ByStr20) =>
+    {_eventname: "OwnerSet"; address: address}
+
+    let eRecordSet =
+  fun(key: String) =>
+  fun(value: String) =>
+    {_eventname: "RecordSet"; key: key; value: value}
+  
+let eRecordUnset =
+  fun(key: String) =>
+    {_eventname: "RecordUnset"; key: key}
+
+let eError =
+  fun(message: String) =>
+    {_eventname: "Error"; message: message}
+
+let mOnResolverConfigured = 
+  fun(registry: ByStr20) => 
+  fun(node: ByStr32) => 
+    let m = {_tag: "onResolverConfigured"; _amount: Uint128 0; _recipient: registry; node: node} in
+      oneMsg m
+
+contract Resolver(
+  initialOwner: ByStr20,
+  registry: ByStr20,
+  node: ByStr32,
+  ada: String,
+  btc: String,
+  eos: String,
+  eth: String,
+  xlm: String,
+  xrp: String,
+  zil: String
+)
+
+field owner: ByStr20 = initialOwner
+
+field records: Map String String = 
+  let blank = ""                in
+  let empty = Emp String String in
+
+  let adaKey = "crypto.ADA.address" in
+  let btcKey = "crypto.BTC.address" in
+  let eosKey = "crypto.EOS.address" in
+  let ethKey = "crypto.ETH.address" in
+  let xlmKey = "crypto.XLM.address" in
+  let xrpKey = "crypto.XRP.address" in
+  let zilKey = "crypto.ZIL.address" in
+
+  let adaBlank = builtin eq blank ada in
+  let btcBlank = builtin eq blank btc in
+  let eosBlank = builtin eq blank eos in
+  let ethBlank = builtin eq blank eth in
+  let xlmBlank = builtin eq blank xlm in
+  let xrpBlank = builtin eq blank xrp in
+  let zilBlank = builtin eq blank zil in
+
+  let withAda = match adaBlank with | True => empty   | False => builtin put empty   adaKey ada end in
+  let withBtc = match btcBlank with | True => withAda | False => builtin put withAda btcKey btc end in
+  let withEos = match eosBlank with | True => withBtc | False => builtin put withBtc eosKey eos end in
+  let withEth = match ethBlank with | True => withEos | False => builtin put withEos ethKey eth end in
+  let withXlm = match xlmBlank with | True => withEth | False => builtin put withEth xlmKey xlm end in
+  let withXrp = match xrpBlank with | True => withXlm | False => builtin put withXlm xrpKey xrp end in
+                match zilBlank with | True => withXrp | False => builtin put withXrp zilKey zil end
+
+(* Sets owner address *)
+(* @ensures a sender address is an owner of the contract *)
+(* @param address *)
+(* @emits OwnerSet if the operation was successful *)
+(* @emits Error if a sender address has no permission for the operation *)
+transition setOwner(address: ByStr20)
+  currentOwner <- owner;
+  isOkSender = builtin eq currentOwner _sender;
+  match isOkSender with
+  | True =>
+    owner := address;
+    e = eOwnerSet address;
+    event e
+  | _ =>
+    e = let m = "Sender not owner" in eError m;
+    event e
+  end
+end
+
+(* Sets a key value pair *)
+(* @ensures a sender address is an owner of the contract *)
+(* @param key *)
+(* @param value *)
+(* @emits RecordSet if the operation was successful *)
+(* @emits Error if a sender address has no permission for the operation *)
+(* @sends onResolverConfigured to the registry *)
+transition set(key: String, value: String)
+  currentOwner <- owner;
+  isOkSender = builtin eq currentOwner _sender;
+  match isOkSender with
+  | True =>
+    records[key] := value;
+    e = eRecordSet key value;
+    event e;
+    msgs = mOnResolverConfigured registry node;
+    send msgs
+  | _ =>
+    e = let m = "Sender not owner" in eError m;
+    event e
+  end
+end
+
+(* Remove a key from records hash *)
+(* @ensures a sender address is an owner of the contract *)
+(* @param key *)
+(* @emits RecordUnset if the operation was successful *)
+(* @emits Error if a sender address has no permission for the operation *)
+(* @sends onResolverConfigured to the registry *)
+transition unset(key: String)
+  keyExists <- exists records[key];
+  currentOwner <- owner;
+  isOk = 
+    let isOkSender = builtin eq currentOwner _sender in
+      andb isOkSender keyExists;
+  match isOk with
+  | True =>
+    delete records[key];
+    e = eRecordUnset key;
+    event e;
+    msgs = mOnResolverConfigured registry node;
+    send msgs
+  | _ =>
+    e = let m = "Sender not owner or key does not exist" in 
+      eError m;
+    event e
+  end
+end

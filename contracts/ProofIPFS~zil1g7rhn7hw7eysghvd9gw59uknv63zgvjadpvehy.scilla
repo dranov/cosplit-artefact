@@ -1,0 +1,289 @@
+scilla_version 0
+
+(* ProofIPFS Contract *)
+
+import PairUtils ListUtils BoolUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library ProofIPFS
+
+let one  = Uint128 1
+let zero = Uint128 0
+
+(* error codes library *)
+let code_success            = Uint32 0
+let code_item_not_found     = Uint32 1
+let code_not_authorized     = Uint32 2
+let code_invalid_params     = Uint32 3
+let code_already_registered = Uint32 4
+let code_amount_wrong       = Uint32 5
+
+let code_cannot_get_funds   = Uint32 11
+
+
+let fst_f = @fst (ByStr20) (BNum)
+let snd_f = @snd (ByStr20) (BNum)
+
+let not_eq =
+    fun (a : String) =>
+    fun (b : String) =>
+        let r = builtin eq a b in
+		negb r
+
+let one_msg =
+	fun (msg : Message) =>
+		let nil_msg = Nil {Message} in
+		Cons {Message} msg nil_msg
+
+let one_element_list =
+	fun (item : String) =>
+		let nil_item = Nil {String} in
+		Cons {String} item nil_item
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+contract ProofIPFS
+(owner: ByStr20)
+
+(* store the price for a registration, start with 0 ZIL             *)
+field price: Uint128 = Uint128 0
+
+(* ipfsInventory will store a Map of Items                          *)
+(*     String  ipfs_cid (index)                                     *)
+(*     ByStr20 registered account address                           *)
+(*     BNum    block_number of registration                         *)
+
+field ipfsInventory: Map String (Pair (ByStr20) (BNum))
+                   = Emp String (Pair (ByStr20) (BNum))
+
+(* mapping each account to a list of registered items / IPFS files  *)
+
+field registered_items: Map ByStr20 List(String)
+                      = Emp ByStr20 List(String)
+
+(* ======== transitions ===============*)
+
+(* @notice: allow anybody to request the price for a registration  *)
+(* @param : no parameter                                           *)
+(* @return: (Uint128) registration_price                           *) 
+
+transition getPrice()
+	registration_price <- price;
+	e = {_eventname: "getPrice"; price: registration_price};
+	event e
+end
+
+
+(* @notice: Allows `_sender` to register ownership for a IPFS file *)
+(* @dev   : No ccess controls - anybody is allowed to register     *)
+(* @dev   : amount has to be send matching the current price       *)
+(* @param : (String) ipfs_cid : IPFS CID (hash) of item (file)     *)
+(* @return: (Uint32) code                                          *)
+
+transition registerOwnership(ipfs_cid: String)
+
+	registration <- ipfsInventory[ipfs_cid];
+	match registration with
+	| Some v =>
+		e = {_eventname : "registerOwnership"; code : code_already_registered};
+		event e
+	| None =>
+		current_price <- price;
+		payment_ok = builtin eq current_price _amount;
+		match payment_ok with
+		| True =>
+			accept;
+			(* Creating a new Item Model *)
+			(* A new item model is a Pair of address (_sender) and block_number *)
+			block_number <- & BLOCKNUMBER;
+			new_item = Pair {(ByStr20) (BNum)} _sender block_number;
+
+			(* Add the new item to the item_inventory Map, with ipfs_cid as the key   *)
+			ipfsInventory[ipfs_cid] := new_item;
+
+			(* update registered_items list for _sender account *)
+			current_list <- registered_items[_sender];
+
+			match current_list with
+			| Some v =>
+				new_list = Cons {String} ipfs_cid v;
+				registered_items[_sender] := new_list
+			| None =>
+				new_list = one_element_list ipfs_cid;
+				registered_items[_sender] := new_list
+			end;
+
+			e = {_eventname : "registerOwnership"; code : code_success};
+			event e
+				
+		| False =>
+			e = {_eventname : "registerOwnership()_amount_wrong"; code: code_amount_wrong; current_price: current_price; amount: _amount};
+			event e
+		end
+	end
+end
+
+
+(* @notice: get registration info for IPFS file                            *)
+(* @dev   : No ccess controls - anybody is allowed to get that information *)
+(* @param : (String) ipfs_cid : IPFS CID (hash) of item (file)             *)
+(* @return: Pair {(ByStr20) (BNum)} address block_number , (Uint32) code   *)
+
+transition getRegistration(ipfs_cid: String)
+
+	registration <- ipfsInventory[ipfs_cid];
+	match registration with
+	| Some v =>
+		(* v contains (address, block_number) (Pair (ByStr20) (BNum)) *)
+		e = {_eventname: "getRegistration_success"; code: code_success; msg: v};
+		event e
+
+	| None =>
+		e = {_eventname: "getRegistration_item_not_found"; code: code_item_not_found};
+		event e
+
+	end
+end
+
+
+(* @notice: get registered items for a given account                       *)
+(* @dev   : No ccess controls - anybody is allowed to get that information *)
+(* @param : (ByStr20) account                                              *)
+(* @return: List(String) ipfs_cid                                          *)
+
+transition getItemList(account: ByStr20)
+
+	item_list <- registered_items[_sender];
+	match item_list with
+	| Some v =>
+		e = {_eventname: "getItemList()"; code: code_success; item_list: v};
+		event e
+
+	| None =>
+		e = {_eventname: "getItemList()_account_not_found"; code: code_item_not_found};
+		event e
+
+	end
+end
+
+
+(* @notice: Delete a registration for a IPFS file                          *)
+(* @dev   : only account address which registered ownership can delete     *)
+(* @param : (String) ipfs_cid : IPFS CID (hash) of item (file)             *)
+(* @return: (Uint32) code                                                  *)
+
+transition deleteRegistration(ipfs_cid: String)
+
+	registration <- ipfsInventory[ipfs_cid];
+	match registration with
+	| Some v =>
+		reg_address  = fst_f v;
+		has_registered = builtin eq reg_address _sender;
+
+		match has_registered with
+		| True =>
+			(* delete entry in Map holding all ipfs_cid *)
+			delete ipfsInventory[ipfs_cid];
+
+			(* update Map registered_items for _sender account             *)
+			(* current list contains all ipfs_cid that user has registered *)
+			current_list <- registered_items[_sender];
+
+            match current_list with
+            | Some l =>
+                list_filter_String = @list_filter String;
+                f = not_eq ipfs_cid;
+                new_list = list_filter_String f l;
+                registered_items[_sender] := new_list;
+                e = {_eventname: "deleteRegistration"; code: code_success};
+			    event e
+			
+            | None =>
+            	e = {_eventname: "deleteRegistration"; code: code_item_not_found};
+		        event e
+            end
+
+		| False =>
+			e = {_eventname: "deleteRegistration"; code: code_not_authorized};
+			event e
+		end
+
+	| None =>
+		e = {_eventname: "deleteRegistration"; code: code_item_not_found};
+		event e
+	end
+
+end
+
+
+(* @notice: allows owner of contract to set the price for a registration *)
+(* @param : new_price : Uint128                                          *)
+(* @return: (Uint32) code                                                *) 
+
+transition setPrice (new_price : Uint128)
+	is_owner = builtin eq owner _sender;
+	match is_owner with
+	| False =>
+		e = {_eventname : "setPrice()"; code : code_not_authorized};
+		event e
+	| True =>
+		price := new_price;
+		e = {_eventname : "setPrice()"; code : code_success};
+		event e
+	end
+end
+
+
+(* @notice: allows owner of contract to get the current balance of contract *)
+(* @param : no parameter                                                    *)
+(* @return: (Uint128) balance                                               *) 
+
+transition getBalance ()
+	is_owner = builtin eq owner _sender;
+	match is_owner with
+	| False =>
+		e = {_eventname : "getBalance()_not_authorized"; code : code_not_authorized};
+		event e
+	| True =>
+		bal <- _balance;
+		e = {_eventname : "getBalance()"; balance : bal; code : code_success};
+		event e
+	end
+end
+
+
+(* @notice: allows owner of contract to get funds of contract            *)
+(* @param : no paramter                                                  *)
+(* @return: (Uint32) code                                                *)
+
+transition getFunds ()
+	is_owner = builtin eq owner _sender;
+	match is_owner with
+	| False =>
+		e = {_eventname : "getFunds()_not_authorized"; code : code_not_authorized};
+		event e
+	| True =>
+		bal <- _balance;
+		e = {_eventname : "getFunds()_transfer_initiated"; recipient_address: owner; amount: bal; code: code_success};
+		event e;
+		msg = {_tag : ""; _recipient : owner; _amount : bal; code : code_success};
+		msgs = one_msg msg;
+		send msgs
+	end
+end
+
+
+transition getContractAddress()
+	e = {_eventname : "getContractAddress"; contract_address : _this_address };
+	event e
+end
+
+
+transition getOwnerAddress()
+	e = {_eventname : "getOwnerAddress"; owner_address : owner };
+	event e
+end

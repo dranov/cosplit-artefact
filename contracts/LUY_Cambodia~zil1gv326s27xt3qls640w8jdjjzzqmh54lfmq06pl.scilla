@@ -1,0 +1,196 @@
+scilla_version 0
+
+(*********************************************************************************)
+(*      LUY Library                                                              *)
+(*      This smart contract is created for LUY app to transfer money in Cambodia *)
+(*      Developed by E-KHMER Technology Co., Ltd                                 *)
+(*********************************************************************************)
+library LUY
+
+let le_int =
+  fun (a : Uint128) => fun (b : Uint128) =>
+    let x = builtin lt a b in
+    match x with
+    | True => True
+    | False =>
+      let y = builtin eq a b in
+      match y with
+      | True => True
+      | False => False
+      end
+    end
+    
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract LUY
+(owner : ByStr20,
+ decimals : Uint32,
+ name : String,
+ symbol : String)
+
+field total_tokens: Uint128 = Uint128 0
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+(* For company, hub, partner, government *)
+field allowed_addr : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+transition BalanceOf (tokenOwner : ByStr20)
+  bal <- balances[tokenOwner];
+  match bal with
+  | Some v =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : v};
+	event e
+  | None =>
+	e = {_eventname : "BalanceOf"; address : tokenOwner; balance : Uint128 0};
+    event e
+  end
+end
+
+transition addSupply (tokens: Uint128)
+    (* Access control: Checking if sender is the owner of the Contract *)
+    is_authorized = builtin eq _sender owner;
+    match is_authorized with
+    | True => 
+        current_bal <- balances[owner];
+        new_bal = match current_bal with
+        | Some x => builtin add x tokens
+        | None => tokens
+        end;
+        balances[owner] := new_bal;
+        total <- total_tokens;
+        new_total = builtin add total tokens;
+        total_tokens := new_total;
+        
+        e = {_eventname : "AddSuccess"; sender : _sender;  amount : tokens};
+        event e
+    | False =>
+        (* Unauthorized transaction *)
+        e = {_eventname : "AddFailed"; sender : _sender;  amount : Uint128 0};
+        event e
+    end
+end
+
+transition subSupply (tokens: Uint128)
+    (* Access control: Checking if sender is the owner of the Contract *)
+    is_authorized = builtin eq _sender owner;
+    match is_authorized with
+    | True => 
+        current_bal <- balances[owner];
+        match current_bal with
+        | Some c_bal =>
+            check_bal = builtin lt c_bal tokens;
+            match check_bal with
+            | False =>
+                total <- total_tokens;
+                new_bal = builtin sub c_bal tokens;
+                new_total = builtin sub total tokens;
+                balances[owner] := new_bal;
+                total_tokens := new_total;
+                e = {_eventname : "SubSuccess"; sender : _sender;  amount : tokens};
+                event e
+            | True =>
+                e = {_eventname : "SubFailed"; sender : _sender;  amount : Uint128 0};
+                event e
+            end
+        | None =>
+            e = {_eventname : "SubFailed"; sender : _sender;  amount : Uint128 0};
+            event e
+        end
+    | False =>
+        (* Unauthorized transaction *)
+        e = {_eventname : "SubFailed"; sender : _sender;  amount : Uint128 0};
+        event e
+    end
+end
+
+
+transition TotalSupply ()
+    total <- total_tokens;
+    e = {_eventname : "TotalSupply"; caller : _sender; balance : total};
+    event e
+end
+
+
+transition Weiluy (to: ByStr20, tokens: Uint128, tohub: Uint32)
+    weiluy_to_hub = Uint32 1;
+    bal <- balances[_sender];
+    toaddre <-allowed_addr[to];
+    fromaddre<-allowed_addr[_sender];
+    match bal with
+    | Some b =>
+        can_do = le_int tokens b;
+        match can_do with
+        | True =>
+            (* hub address is approved or not *)
+            is_hub = builtin eq weiluy_to_hub tohub;
+            checkAddr = match is_hub with
+            | True => toaddre
+            | False => fromaddre
+            end;
+            
+            match checkAddr with
+            | Some addr =>
+                (* Substract from owner balance *)
+                new_sender_bal = builtin sub b tokens;
+                balances[_sender] := new_sender_bal;
+                
+                (* Start to send transaction to hub address *)
+                hub_bal <- balances[to];
+                new_hub_bal = match hub_bal with
+                | Some x => builtin add x tokens
+                | None => tokens
+                end;
+                balances[to] := new_hub_bal;
+                e = {_eventname : "TransferSuccess"; sender : _sender; recipient : to; amount : tokens};
+                event e
+                
+            | None =>
+                e = {_eventname : "TransferInvalidAddress"; sender : _sender; recipient : to; amount : Uint128 0};
+                event e
+            end
+            
+        | False =>
+            e = {_eventname : "TransferInsufficient"; sender : _sender; recipient : to; amount : Uint128 0};
+            event e   
+        end 
+    | None =>
+        (* no balance record, can't transfer *)
+      	e = {_eventname : "TransferFailure"; sender : _sender; recipient : to; amount : Uint128 0};
+        event e
+    end
+    
+end 
+
+transition approveAddress(addr: ByStr20, fee: Uint128)
+    (* Access control: Checking if sender is the owner of the Contract *)
+    is_authorized = builtin eq _sender owner;
+    match is_authorized with
+    | True => 
+        allowed_addr[addr] := fee;
+        e = {_eventname : "ApproveSuccess"; sender : _sender;  amount : Uint128 0};
+        event e
+        
+    | False =>
+        (* Unauthorized transaction *)
+        e = {_eventname : "ApproveFailed"; sender : _sender;  amount : Uint128 0};
+        event e
+    end
+end
+transition removeAddress(addr: ByStr20)
+    (* Access control: Checking if sender is the owner of the Contract *)
+    is_authorized = builtin eq _sender owner;
+    match is_authorized with
+    | True => 
+        delete allowed_addr[addr];
+        e = {_eventname : "DeleteSuccess"; sender : _sender; amount : Uint128 0};
+        event e
+        
+    | False =>
+        (* Unauthorized transaction *)
+        e = {_eventname : "DeleteFailed"; sender : _sender; amount : Uint128 0};
+        event e
+    end
+end

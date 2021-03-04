@@ -1,0 +1,62 @@
+scilla_version 0
+
+        library Soundario
+        
+        let one_msg =
+          fun (msg: Message) =>
+          let nil_msg = Nil {Message} in
+          Cons {Message} msg nil_msg
+        
+        let code_success = Uint32 0
+        let code_not_authorized = Uint32 1
+        
+        contract Soundario
+        (owner: ByStr20)
+        
+        field royalties: Map ByStr32 String = Emp ByStr32 String
+                        
+        transition newRoyalty(royalty_hash: ByStr32, artists: String) 
+            is_authorized = builtin eq _sender owner;
+            match is_authorized with
+            | True => 
+                royalties[royalty_hash] := artists;
+                msg = { 
+                    _tag: "";
+                    _recipient: _sender;
+                    _amount: Uint128 0;
+                    code: code_success};
+                msgs = one_msg msg;
+                send msgs
+            | False =>
+                msg = {
+                    _tag: "";
+                    _recipient: _sender;
+                    _amount: Uint128 0;
+                    code: code_not_authorized};
+                msgs = one_msg msg;
+                send msgs
+            end 
+        end
+        
+        transition removeRoyalty(royalty_hash: ByStr32)
+            is_authorized = builtin eq _sender owner;
+            match is_authorized with
+            | True =>
+                delete royalties[royalty_hash];
+                msg = { 
+                    _tag: "";
+                    _recipient: _sender;
+                    _amount: Uint128 0;
+                    code: code_success};
+                msgs = one_msg msg;
+                send msgs
+            | False =>
+                msg = {
+                    _tag: "";
+                    _recipient: _sender;
+                    _amount: Uint128 0;
+                    code: code_not_authorized};
+                msgs = one_msg msg;
+                send msgs
+            end
+        end

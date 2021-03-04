@@ -1,0 +1,58 @@
+
+        scilla_version 0
+
+        library BunkeringLogs
+
+        let op_success = Int32 0
+        let not_owner_code = Int32 1
+        let log_exist = Int32 2
+        let log_not_exist = Int32 3
+
+        contract BunkeringLogs
+        (owner: ByStr20)
+
+        field bunkeringLogs: Map String String = Emp String String
+
+        transition addBunkeringLog(id: String, hash: String)
+            is_owner = builtin eq owner _sender;
+            match is_owner with
+            | False =>
+                e = {_eventname : "addBunkeringLog()"; code : not_owner_code};
+                event e
+            | True =>
+                logs <- bunkeringLogs;
+                logExist = builtin contains logs id;
+                match logExist with
+                    | True =>
+                        e = {_eventname : "addBunkeringLog"; code : log_exist};
+                        event e
+                    | False =>
+                        bunkeringLogs[id] := hash;
+                        e = {_eventname : "addBunkeringLog"; code : op_success};
+                        event e
+                end
+            end
+        end
+
+        transition getBunkeringLog(id: String)
+            is_owner = builtin eq owner _sender;
+            match is_owner with
+            | False =>
+                e = {_eventname : "getBunkeringLog()"; code : not_owner_code};
+                event e
+            | True =>
+                logs <- bunkeringLogs;
+                getValue = builtin get logs id;
+                match getValue with
+                    | Some h =>
+                        e = {_eventname : "getBunkeringLog"; code : op_success;
+                             log: id; data : h};
+                        event e
+                    | None =>
+                        e = {_eventname : "getBunkeringLog"; code : log_not_exist;
+                             log: id; data : ""};
+                        event e
+
+                end
+            end
+        end
