@@ -12,9 +12,10 @@ at the end of this file.
 The artefact consists of a virtual machine image.
 
 Download VirtualBox from https://www.virtualbox.org/wiki/Downloads. We used
-version 6.1.18.
+version 6.1.18. Older versions may work, but especially if you are running
+Windows and use HyperV (e.g. WSL2 or Docker), we recommend the latest version.
 
-The *login details* are user 'pldi21' with password 'pldi21' (without quotes).
+The login details are user 'pldi21' with password 'pldi21' (without quotes).
 
 ## Step-by-Step Instructions (Full Review)
 

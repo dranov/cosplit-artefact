@@ -8,11 +8,13 @@ echo "Name,LOC,Parse_min,Parse_avg,Parse_max,Typecheck_min,Typecheck_avg,Typeche
 
 for file in $CONTRACTS_PATH/*
 do
-	# Have to be very careful so that the names do not include unescaped '_' (underscore)
+	# Have to be very careful that the CSV does not include unescaped '_' (underscore)
 	# otherwise the LaTeX plots break with an undebuggable error message
 	name=$(basename $file | cut -d '~' -f 1 | sed 's/_/\\_/')
 	line_count=$(wc -l "$file" | cut -d ' ' -f 1)
-	TMP_FILE="/tmp/_$name.csv"
+
+	filename=$(basename $file | cut -d '~' -f 1)
+	TMP_FILE="/tmp/_$filename.csv"
 	rm -f $TMP_FILE
 	
 	analysis=$($SCILLA_PATH/bin/scilla-checker -gaslimit 10000 -libdir $SCILLA_PATH/src/stdlib/ "$file" -sa -sa-timings 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//')
