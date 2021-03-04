@@ -10,7 +10,7 @@ for file in $CONTRACTS_PATH/*
 do
 	# Have to be very careful that the CSV does not include unescaped '_' (underscore)
 	# otherwise the LaTeX plots break with an undebuggable error message
-	name=$(basename $file | cut -d '~' -f 1 | sed 's/_/\\_/')
+	name=$(basename $file | cut -d '~' -f 1 | sed 's/_/\\_/g')
 	line_count=$(wc -l "$file" | cut -d ' ' -f 1)
 
 	filename=$(basename $file | cut -d '~' -f 1)
