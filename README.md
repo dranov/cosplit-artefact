@@ -1,26 +1,29 @@
 # CoSplit artefact - PLDI21 paper 885
 
+This document last updated on 2021-03-05 at 10:15 GMT.
+
 If you run into issues with the virtual machine, see the troubleshooting section
 at the end of this file.
 
-## Getting Started Guide (Kick the Tires)
+**Reviewers:** run `git pull` and `git submodule update` in the
+`cosplit-artefact` folder to receive the latest updates & instructions.
 
-The artefact consists of a virtual machine image.
+## Getting Started Guide (Kick the Tires)
 
 Download VirtualBox from https://www.virtualbox.org/wiki/Downloads. We used
 version 6.1.18. Older versions may work, but especially if you are running
 Windows and use HyperV (e.g. WSL2 or Docker), we recommend the latest version.
 
-The login details are user 'pldi21' with password 'pldi21' (without quotes).
+Import the virtual machine image into Virtual Box.
 
-**TODO: add instructions of how to import the VM**
+The login details are user 'pldi21' with password 'pldi21' (without quotes).
 
 Once you start the VM:
 
-1. Open a terminal and change directory to `~/cosplit-artefact`
-
-2. Inspect the `~/cosplit-artefact/fig/` folder to see the plots that were
+1. Open the `~/cosplit-artefact/fig/` folder to see the plots that were
    generated on the authors' machine. Run `make clean` to delete them.
+
+2. Open a terminal and change directory to `~/cosplit-artefact`
 
 3. Run `make`. This should take roughly 3.5 minutes and will produce figures in
    the `~/cosplit-artefact/fig/` folder:
@@ -80,7 +83,12 @@ Once you start the VM:
    NonfungibleToken, Unstoppable Domains registry) (lines 1172-1207).
 
    - We include the source code of these contracts, as well as transaction
-     workloads (`traces`) that we used for benchmarking throughput.
+     workloads (`traces`) that we used for benchmarking throughput. We also give
+     instructions to spin up a Zilliqa locally network and provide the scripts
+     to replay our transaction traces on a deployed Zilliqa network. However,
+     running these in the virtual machine is impractical and would not provide
+     any meaningful results. Unfortunately, we are unable to provide access to a
+     cloud environment.
 
 2. Our integration of CoSplit with Zilliqa introduces an approximately 60x
    overhead to transaction dispatch time (8 microseconds to 475 microseconds)
@@ -89,15 +97,70 @@ Once you start the VM:
 
 ## Step-by-Step Instructions (Full Review)
 
+Same as 'Kick the Tires' instructions.
 
-1. Run the steps in the 'Getting Started' section
+Additionally, if you want to rebuild Scilla and Zilliqa:
 
+1. Run `make clean` and `make` in the Scilla folder
+2. Run `rm -rf build/` and `./build.sh` in the Zilliqa folder
 
-## Appendix
+### Folder structure
 
-## Folder structure
+The `cosplit-artefact` folder consists of the following:
+
+- `README.md` - the document you are reading now
+- `pldi21-paper885.pdf` - the submission-version of the paper
+- `eth-usage-analysis/` - contains `eth-usage-dataset.zip`, an archive of the
+  data we used to compute the Ethereum statistics used in the motivation section
+  of the paper, as well as the Jupyter Notebook used to plot the graphs
+- `contracts/` - dataset of contracts used for the analysis benchmarks (Figure
+  12 and Figure 13); the VM comes with an instance of Visual Studio Code
+  installed, which you can use to inspect the contracts
+- `scilla/` - the Scilla source code, with the CoSplit analysis included; the
+  important files are:
+
+  * `src/base/ShardingAnalysis.ml` is the main file, that performs the analysis
+  * `src/server/sharding.ml` is invoked by the Zilliqa nodes to dispatch
+    CoSplit-enabled transactions to the appropriate shard (function `get_shard`)
+    AND to perform state delta merging (function `join`)
+  * `src/base/Checker.ml` defines the various command line options
+
+- `Zilliqa/` - the Zilliqa node source code, set up to use the CoSplit analysis
+
+  * `src/libData/AccountData/Transaction.cpp`, method
+    `Transaction::GetShardIndex` invokes the Scilla Server to determine which
+    shard a CoSplit-enabled transaction should be sent to
+  * `src/libPersistence/ContractStorage2.cpp`, method
+    `UpdateStateDatasAndToDeletes` invokes the Scilla Server to determine how to
+    merge shard state deltas coming from CoSplit-enabled smart contracts
+
+ - `benchmarks` - scripts to compute the data for Figures 12 and 13 and to plot
+   the figures
+ - `throughput`
+  
+  * `contracts/` used for the throughput evaluation;
+  * workload transaction traces (parameters used for CoSplit-enabled contract
+    deployment are in `traces/with-cosplit/ss-deploy.trace`); except for
+    contract deployment transactions, CoSplit-enabled and regular Zilliqa
+    transactions are the same, so the files in `traces/` can be used for both
+    CoSplit-enabled and non-CoSplit Zilliqa
+  * `watch.py`, a script to inspect the state of a Zilliqa network
+  * `replay-trace.py` executes a transaction trace whose path is passed as the
+    first argument
+  * `accounts.csv` and `accounts.xml` contain the account (pubkey, privkey)
+    pairs and wallet addresses, respectively, of the accounts used in the
+    transaction traces
+  * The contents of `accounts.xml` need to be added to the `<accounts>` field in
+    Zilliqa's `constants_local.xml` for the traces to be replayable
+  * `fund.py` - a script to generate accounts and transaction traces; not
+    directly used for benchmarking
+
+  * `pyzil/` - a custom version of the PyZil Python library, used by the scripts
+    in `throughput/`
 
 ### Reference commands
+
+#### Scilla
 
 Output the result of the sharding analysis for a given contract:
 
@@ -116,13 +179,22 @@ To get the timing split between parsing/typechecking/sharding analysis:
 ```
 ./bin/scilla-checker -gaslimit 10000 -libdir ./src/stdlib/ -sa -sa-timings  ~/cosplit-artefact/contracts/FungibleToken~zil1ygxmqm8rvgvvmy9a6jn04mtq3qssy9qws92lqr.scilla 2>/dev/null | head -n3 | sed 's/\[Parse\] //' | sed 's/\[Typecheck\] '// | sed 's/\[Sharding\] //' | tr '\n' ',' | sed 's/,$//'
 ```
+#### Zilliqa
 
-Spin up a local Zilliqa network:
+Spin up a local Zilliqa network (from `Zilliqa/build` folder):
 
 ```
-cd build && ./tests/Node/pre_run.sh && ./tests/Node/test_node_lookup.sh && ./tests/Node/test_node_simple.sh
+./tests/Node/pre_run.sh && ./tests/Node/test_node_lookup.sh && ./tests/Node/test_node_simple.sh
 ```
 
+In the `throughput` folder, you can run `watch ./watch.py` to see the state of
+the network.
+
+Example of replaying traces:
+
+`./replay-trace.py traces/with-cosplit/ss-deploy.trace`
+
+## Appendix
 ### Troubleshooting
 
 - **The Virtual Box display window becomes black.** This sometimes happens on
@@ -139,4 +211,5 @@ cd build && ./tests/Node/pre_run.sh && ./tests/Node/test_node_lookup.sh && ./tes
   window, select Devices -> Shared clipboard -> Bidirectional.
 
 - **I cannot unzip `eth-usage-dataset.zip`.** Use `7za x eth-usage-dataset.zip`
-  rather than the `unzip` command.
+  rather than the `unzip` command. The archive is heavily compressed (full size
+  is ~15GB) and may take 3+ hours to unzip.
