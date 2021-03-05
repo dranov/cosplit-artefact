@@ -1,0 +1,500 @@
+scilla_version 0
+
+import BoolUtils ListUtils
+
+library RegistryLib
+
+(* The PsudoStandardLib is a standard list of values that we have defined for *)
+(* all scilla contracts see scilla/psuedo_standard.scillib for all the details *)
+
+let zeroUint64 = Uint64 0
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+let zeroByStr32 =
+  0x0000000000000000000000000000000000000000000000000000000000000000
+let nilByStr20 = Nil {ByStr20}
+let nilMessage = Nil {Message}
+
+let oneMsg =
+  fun(msg: Message) =>
+    Cons {Message} msg nilMessage
+
+let eqByStr32 =
+  fun(bs1: ByStr32) =>
+  fun(bs2: ByStr32) =>
+    builtin eq bs1 bs2
+
+(* XAND Gate *)
+let xandb =
+  fun(b1: Bool) =>
+  fun(b2: Bool) =>
+    match b1 with
+    | True =>
+      match b2 with
+      | True => True
+      | False => False
+      end
+    | False =>
+      match b2 with
+      | True => False
+      | False => True
+      end
+    end
+
+(* Events defines a the "constructors" for all the types of events used *)
+(* inside ZNS *)
+let eAdminSet =
+  fun(address: ByStr20) =>
+  fun(isApproved: Bool) =>
+    {_eventname: "AdminSet"; address: address; isApproved: isApproved}
+
+let eApprovedFor =
+  fun(user: ByStr20) =>
+  fun(operator: ByStr20) =>
+  fun(isApproved: Bool) =>
+    {_eventname: "ApprovedFor"; user: user; operator: operator; isApproved: isApproved}
+
+let eApproved =
+  fun(address: ByStr20) =>
+    {_eventname: "Approved"; address: address}
+
+let eNewRegistrar =
+  fun(address: ByStr20) =>
+    {_eventname: "NewRegistrar"; address: address}
+
+let eNewDomain =
+  fun(parent: ByStr32) =>
+  fun(label: String) =>
+    {_eventname: "NewDomain"; parent: parent; label: label}
+
+let eConfigured =
+  fun(node: ByStr32) =>
+  fun(owner: ByStr20) =>
+  fun(resolver: ByStr20) =>
+    {_eventname: "Configured"; node: node; owner: owner; resolver: resolver}
+(* We use the Error event to alert the caller if something went wrong because *)
+(* Scilla doesn't support throwing *)
+let eError =
+  fun(msg: String) =>
+    {_eventname: "Error"; msg: msg }
+
+type Unit =
+| Unit
+
+let unit = Unit
+
+let getByStr20 =
+  fun(maybeAddr: Option ByStr20) =>
+    match maybeAddr with
+    | None => zeroByStr20
+    | Some addr => addr
+    end
+
+let parentLabelToNode =
+  fun(parent: ByStr32) =>
+  fun(label: String) =>
+    let labelHash = builtin sha256hash label in
+    let nodeInput = builtin concat parent labelHash in
+      builtin sha256hash nodeInput
+
+let getIsOAO =
+  fun(sender: ByStr20) =>
+  fun(recordOwner: ByStr20) =>
+  fun(maybeApproved: Option ByStr20) =>
+  fun(isOperator: Bool) =>
+    let isOwner = builtin eq sender recordOwner in
+    let isApproved =
+      match maybeApproved with
+      | None => False
+      | Some approved => builtin eq sender approved
+      end in
+    let b1 = orb isOwner isApproved in orb b1 isOperator
+
+
+(* The 'contract' pragma tells scilla that the contract body starts *)
+contract Registry
+
+(* Initial Parameters are specified on deploy, in the init.json and cannot be *)
+(* changed throughout the life of the contract *)
+
+(* initialOwner specifies the owner of the ZNS Root. See records field below. *)
+(initialOwner: ByStr20, rootNode: ByStr32)
+
+(* Mutable Fields represent the persistant state of a scilla contract and can *)
+(* use the Initial Parameters durring contract instantiation *)
+
+(* records is the representation of the ZNS record tree as a mapping of a *)
+(* Node IDs (ByStr32) to ZNS records (Record) *)
+(* We initialize the field, so the contracts' initialOwner owns the ZNS root *)
+field record_owner: Map ByStr32 ByStr20 =
+  let empty = Emp ByStr32 ByStr20 in
+  builtin put empty rootNode initialOwner
+
+field record_resolver: Map ByStr32 ByStr20 =
+  let empty = Emp ByStr32 ByStr20 in
+  builtin put empty rootNode zeroByStr20
+
+field registrar: ByStr20 = zeroByStr20
+
+(* approvals and operators are the internal representation of the ERC721 like *)
+(* IAM system that ZNS uses *)
+field approvals: Map ByStr32 ByStr20 = Emp ByStr32 ByStr20
+field operators: Map ByStr20 (Map ByStr20 Unit) = Emp ByStr20 (Map ByStr20 Unit)
+field admins: Map ByStr20 Unit =
+  let emp_map = Emp ByStr20 Unit in
+  builtin put emp_map initialOwner unit
+
+(* Adds or removes the given address as the contract admin based on isApproved flag *)
+(* @ensures sender address is an admin *)
+(* @param address the address to be added as admin *)
+(* @param isApproved when true the address is added to admins, otherwise the address removed from admins *)
+(* @emits adminSet with address and isApproved flag when the new admin was assigned or removed *)
+(* @emits Error when sender address has no permission for this operation *)
+transition setAdmin(address: ByStr20, isApproved: Bool)
+  isSenderAdmin <- exists admins[_sender];
+
+  match isSenderAdmin with
+  | True =>
+      match isApproved with
+      | True => admins[address] := unit
+      | False => delete admins[address]
+      end;
+      e = eAdminSet address isApproved;
+      event e
+  | False =>
+    e = let m = "Sender not root node owner" in eError m;
+    event e
+  end
+end
+
+(* Allows the nodes' owner to approve of one address to freely configure a node *)
+(* @ensures sender address is an owner of the node *)
+(* @param node *)
+(* @param address  *)
+(* @emits Approved when the new approved address is set *)
+(* @emits Error when sender address has no permission for this operation *)
+transition approve(node: ByStr32, address: ByStr20)
+  maybeRecordOwner <- record_owner[node];
+  recordOwner = getByStr20 maybeRecordOwner;
+  isSenderNodeOwner = builtin eq _sender recordOwner;
+
+  match isSenderNodeOwner with
+  | True =>
+      approvals[node] := address;
+      e = eApproved address;
+      event e
+  | False =>
+    e = let m = "Sender not node owner" in eError m;
+    event e
+  end
+end
+
+(* Allows the sender account to approve or unapprove an address to act on it's behalf. *)
+(* @param address  *)
+(* @param isApproved when true the address is added to the list operators otherwise removed  *)
+(* @emits ApprovedFor when the new approved address is added or removed from operators based on isApproved flag*)
+transition approveFor(address: ByStr20, isApproved: Bool)
+  match isApproved with
+  | True => operators[_sender][address] := unit
+  | False => delete operators[_sender][address]
+  end;
+  e = eApprovedFor _sender address isApproved;
+  event e
+end
+
+(* Configures an existing node owner and resolver *)
+(* @ensures sender address is an owner of the node or one of owner's operators or an approved address for the node *)
+(* @param node address of the node to be configured*)
+(* @param owner a new owner of the node *)
+(* @param resolver a new resolver address of the node *)
+(* @sends onConfigureSuccess to the sender if it was successfully changed *)
+(* @sends onConfigureFailure to the sender if it failed to change *)
+(* @emits Configured the operation was successful *)
+(* @emits Error when sender address has no permission for this operation *)
+transition configureNode(node: ByStr32, owner: ByStr20, resolver: ByStr20)
+  maybeRecordOwner <- record_owner[node];
+  recordOwner = getByStr20 maybeRecordOwner;
+  maybeApproved <- approvals[node];
+  isOperator <- exists operators[recordOwner][_sender];
+
+  isSenderOAO = getIsOAO _sender recordOwner maybeApproved isOperator;
+
+  match isSenderOAO with
+  | True =>
+    record_owner[node] := owner;
+    record_resolver[node] := resolver;
+    e = eConfigured node owner resolver;
+    event e;
+    msgs = let m = {_tag: "onConfigureSuccess"; node: node; owner: owner;
+                    _amount: Uint128 0; _recipient: _sender}
+      in oneMsg m;
+    send msgs
+
+  | False =>
+    e = let m = "Sender not node owner, approved or operator" in eError m;
+    event e;
+    msgs = let m = {_tag: "onConfigureFailure"; node: node; owner: recordOwner;
+                    _amount: Uint128 0; _recipient: _sender}
+      in oneMsg m;
+    send msgs
+  end
+end
+
+(* Configures an existing node resolver *)
+(* @ensures sender address is an owner of the node or one of owner's operators or an approved address for the node *)
+(* @param node address of the node to be configured *)
+(* @param resolver a new resolver address of the node *)
+(* @emits Configured if the node's resolver was changed successfully*)
+(* @emits Error when a sender address has no permission for this operation *)
+transition configureResolver(recordOwner: ByStr20, node: ByStr32, resolver: ByStr20) 
+  maybeRecordOwner <- record_owner[node];
+  nodeOwner = getByStr20 maybeRecordOwner;
+
+  isCorrectOwner = builtin eq nodeOwner recordOwner;
+  match isCorrectOwner with
+  | False => throw
+  | True =>
+
+  maybeApproved <- approvals[node];
+  isOperator <- exists operators[recordOwner][_sender];
+
+  isSenderOAO = getIsOAO _sender recordOwner maybeApproved isOperator;
+
+  match isSenderOAO with
+  | True =>
+    record_owner[node] := recordOwner;
+    record_resolver[node] := resolver;
+    e = eConfigured node recordOwner resolver;
+    event e
+
+  | False =>
+    e = let m = "Sender not node owner, approved or operator" in eError m;
+    event e
+  end
+  end
+end
+
+(* Transfer an existing node to an owner *)
+(* @ensures sender address is an owner of the node or one of node's owner operators or an approved address of this node *)
+(* @param node address of the node to be configured *)
+(* @param owner a new owner of the node *)
+(* @sends onTransferSuccess to the sender if it was successfully changed *)
+(* @sends onTransferFailure to the sender if it failed to change *)
+(* @emits Configured if the node's owner was changed successfully*)
+(* @emits Error when a sender address has no permission for this operation *)
+transition transfer(node: ByStr32, owner: ByStr20)
+  maybeRecordOwner <- record_owner[node];
+  recordOwner = getByStr20 maybeRecordOwner;
+  maybeApproved <- approvals[node];
+  isOperator <- exists operators[recordOwner][_sender];
+
+  isSenderOAO = getIsOAO _sender recordOwner maybeApproved isOperator;
+
+  match isSenderOAO with
+  | True =>
+    delete approvals[node];
+    record_owner[node] := owner;
+    record_resolver[node] := zeroByStr20;
+
+    e = eConfigured node owner zeroByStr20;
+    event e;
+    msgs = let m = {_tag: "onTransferSuccess"; node: node; owner: owner;
+                    _amount: Uint128 0; _recipient: _sender}
+      in oneMsg m;
+    send msgs
+
+  | False =>
+    e = let m = "Sender not node owner, approved or operator" in eError m;
+    event e;
+    msgs = let m = {_tag: "onTransferFailure"; node: node; owner: owner;
+                    _amount: Uint128 0; _recipient: _sender}
+      in oneMsg m;
+    send msgs
+  end
+end
+
+(* Transfer a subnode to an account. This is the only way to create a new node. `assign` uses the same mechanics as `transfer` *)
+(* @ensures sender address is an owner of the parent node or one of parent node's owner operators or an approved address of parent node *)
+(* @param parent parent node address *)
+(* @param label a name of the subnode (subdomain) to be assigned *)
+(* @param owner an owner address of the subnode *)
+(* @sends onAssignSuccess to the sender if it was successfully changed *)
+(* @sends onAssignFailure to the sender if it failed to change *)
+(* @emits Configured if the node's owner was changed successfully*)
+(* @emits NewDomain when the target node(domain) didn't exist before and was made *)
+(* @emits Error when a sender address has no permission for this operation *)
+transition assign(node: ByStr32, parent: ByStr32, label: String, owner: ByStr20)
+  maybeRecordOwner <- record_owner[node];
+  recordOwner = getByStr20 maybeRecordOwner;
+  maybeApproved <- approvals[parent];
+  isOperator <- exists operators[recordOwner][_sender];
+
+  isSenderOAO = getIsOAO _sender recordOwner maybeApproved isOperator;
+
+  match isSenderOAO with
+  | True =>
+    correct_node = parentLabelToNode parent label;
+    nodeComputedCorrectly = eqByStr32 node correct_node;
+
+    match nodeComputedCorrectly with
+    | False => throw
+    | True =>
+      recordExists <- exists record_owner[node];
+      match recordExists with
+      | False =>
+        e = eNewDomain parent label;
+        event e
+      | _ =>
+      end;
+
+      delete approvals[node];
+      record_owner[node] := owner;
+      record_resolver[node] := zeroByStr20;
+
+      e = eConfigured node owner zeroByStr20;
+      event e;
+
+      msgs = let m = {_tag: "onAssignSuccess"; parent: parent; label: label; 
+                      owner: owner; _amount: Uint128 0; _recipient: _sender} 
+        in oneMsg m;
+      send msgs
+    end
+  | False =>
+    e = let m = "Sender not parent owner, approved or operator" in eError m;
+    event e;
+
+    msgs = let m = {_tag: "onAssignFailure"; parent: parent; label: label; 
+                    owner: recordOwner; _amount: Uint128 0; _recipient: _sender} 
+      in oneMsg m;
+    send msgs
+  end
+end
+
+(* Transfer an unowned subnode to an account. *)
+(* @ensures a node is not owned by anyone or owned by registrar *)
+(* @ensures sender address is an admin or a registrar *)
+(* @param parent parent node address *)
+(* @param label a name of the subnode (subdomain) to be assigned *)
+(* @param owner a new owner address of the subnode *)
+(* @emits NewDomain when node(domain) was assigned to the new owner *)
+(* @emits Configured if the node's owner was changed successfully*)
+(* @emits Error when a sender address has no permission for this operation *)
+transition bestow(node: ByStr32, label: String, owner: ByStr20, resolver: ByStr20)
+  correct_node = parentLabelToNode rootNode label;
+  nodeComputedCorrectly = eqByStr32 node correct_node;
+
+  match nodeComputedCorrectly with
+  | False => throw
+  | True =>
+    recordExists <- exists record_owner[node];
+    maybeRecordOwner <- record_owner[node];
+    recordOwner = getByStr20 maybeRecordOwner;
+    currentRegistrar <- registrar;
+    isSenderAdmin <- exists admins[_sender];
+
+    isOk =
+      let isSenderRegistrar = builtin eq currentRegistrar _sender in
+      let isOkSender = orb isSenderRegistrar isSenderAdmin in
+      let recordIsUnowned = builtin eq recordOwner zeroByStr20 in
+      let recordIsOwnedByRegistrar = builtin eq recordOwner currentRegistrar in
+      let isRegistrarSenderAndOwned = andb recordIsOwnedByRegistrar isSenderRegistrar in
+      let isOkRecordOwner = orb recordIsUnowned isRegistrarSenderAndOwned in
+        andb isOkSender isOkRecordOwner;
+
+    match isOk with
+    | True =>
+      match recordExists with
+      | False =>
+        e = eNewDomain rootNode label;
+        event e
+      | _ => 
+      end;
+
+      (* delete approvals[node]; *)
+      record_owner[node] := owner;
+      record_resolver[node] := resolver;
+
+      e = eConfigured node owner resolver;
+      event e
+    | False =>
+      e = let m = "Sender admin" in eError m;
+      event e
+    end
+  end
+end
+
+(* Sets a new registrar for the registry *)
+(* @ensures the sender address is an admin *)
+(* @param address the new registrar address *)
+(* @emits NewRegistrar when the registrar was reassigned successfully *)
+transition setRegistrar(address: ByStr20)
+  isOk <- exists admins[_sender];
+
+  match isOk with
+  | True => 
+    e = eNewRegistrar address;
+    event e;
+    registrar := address
+  | _ => 
+  end
+end
+
+(* Registers an new domain throw the registrar of the contract *)
+(* @param parent a parent address of the domain *)
+(* @param label the new domain name to be registered *)
+(* @ensures the new domain is not owned by anyone *)
+(* @ensures the new domain has no approved address *)
+(* @accepts the payment for the domain *)
+(* @sends register to the current registrar with the sent amount *)
+transition register(node: ByStr32, parent: ByStr32, label: String)
+  correct_node = parentLabelToNode parent label;
+  nodeComputedCorrectly = eqByStr32 node correct_node;
+  match nodeComputedCorrectly with
+  | False => throw
+  | True =>
+    maybeApproved <- approvals[node];
+    maybeRecordOwner <- record_owner[node];
+    recordOwner = getByStr20 maybeRecordOwner;
+    approved =
+      match maybeApproved with
+      | None => zeroByStr20
+      | Some approved => approved
+      end;
+    currentRegistrar <- registrar;
+
+    isOk =
+      let isRecordUnowned = builtin eq recordOwner zeroByStr20 in
+      let isUnapproved = builtin eq approved zeroByStr20 in
+        andb isRecordUnowned isUnapproved;
+
+    match isOk with 
+    | True =>
+      accept;
+      msgs =
+        let m = {_tag: "register"; _amount: _amount; _recipient: currentRegistrar;
+                origin: _sender; node: node; parent: parent; label: label} in
+          oneMsg m;
+      send msgs
+    | False =>
+    end
+  end
+end
+
+(* Callback method expected to be called by resolver when its configuration is changed *)
+(* @param node that has its resolver configured *)
+(* @ensures the node still has the _sender as its resolver *)
+(* @emits Configured that can be used by 3rd parties to monitor changes in resolvers configuration all over the registry *)
+transition onResolverConfigured(node: ByStr32)
+  maybeResolver <- record_resolver[node];
+  resolver = getByStr20 maybeResolver;
+  maybeOwner <- record_owner[node];
+  owner = getByStr20 maybeOwner;
+
+  isOk = builtin eq resolver _sender;
+  match isOk with
+  | True =>
+    e = eConfigured node owner resolver;
+    event e
+  | False =>
+  end
+end
+
