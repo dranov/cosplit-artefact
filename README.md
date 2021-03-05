@@ -187,6 +187,10 @@ Spin up a local Zilliqa network (from `Zilliqa/build` folder):
 ./tests/Node/pre_run.sh && ./tests/Node/test_node_lookup.sh && ./tests/Node/test_node_simple.sh
 ```
 
+If you want to have a different number of nodes/shards than the default, you
+will have to edit `<COMM_SIZE>` in `constants_local.xml` and `num_ds` (number of
+nodes per shard) and `num_shards` in `pre_run.sh` and `test_node_simple.sh`.
+
 In the `throughput` folder, you can run `watch ./watch.py` to see the state of
 the network.
 
