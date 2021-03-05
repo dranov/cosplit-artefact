@@ -1,0 +1,3 @@
+[submodule "scilla"]
+	path = scilla
+	url = https://github.com/dranov/scilla.git
