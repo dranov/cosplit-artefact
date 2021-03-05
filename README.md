@@ -104,6 +104,8 @@ Additionally, if you want to rebuild Scilla and Zilliqa:
 1. Run `make clean` and `make` in the Scilla folder
 2. Run `rm -rf build/` and `./build.sh` in the Zilliqa folder
 
+If you want to explore the source code, we provide some pointers below.
+
 ### Folder structure
 
 The `cosplit-artefact` folder consists of the following:
