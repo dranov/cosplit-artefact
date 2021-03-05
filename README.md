@@ -91,8 +91,9 @@ Once you start the VM:
      cloud environment.
 
   - Note: if you try this process (explained in the Zilliqa subsection) in the
-    VM, in will not work. CPU usage gets pegged at 100% and the network has
-    trouble even starting due to the high number of genesis accounts.
+    VM, it will most likely not work. CPU usage gets pegged at 100% and the 
+    network has trouble even starting due to the high number of genesis 
+    accounts.
 
 2. Our integration of CoSplit with Zilliqa introduces an approximately 60x
    overhead to transaction dispatch time (8 microseconds to 475 microseconds)
