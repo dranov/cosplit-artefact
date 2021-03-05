@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import hashlib
 
 API_ENDPOINT = "http://localhost:4201"
-ZILLIQA_PATH = "/home/pldi21/Zilliqa"
+ZILLIQA_PATH = "/home/pldi21/cosplit-artefact/Zilliqa"
 CONFIG_FILE = "config.json"
 
 WAIT_TIME = 10

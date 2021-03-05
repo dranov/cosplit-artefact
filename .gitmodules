@@ -4,3 +4,6 @@
 [submodule "pyzil"]
 	path = pyzil
 	url = https://github.com/dranov/pyzil.git
+[submodule "Zilliqa"]
+	path = Zilliqa
+	url = git@github.com:dranov/Zilliqa.git
