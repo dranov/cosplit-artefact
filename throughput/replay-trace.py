@@ -11,8 +11,7 @@ import math
 from concurrent import futures
 from concurrent.futures import ProcessPoolExecutor
 
-# API_ENDPOINT = "http://localhost:4201"
-API_ENDPOINT = "https://george0021-api.dev.z7a.xyz"
+API_ENDPOINT = "http://localhost:4201"
 
 LocalNet = chain.BlockChain(API_ENDPOINT, version=1, network_id=0)
 chain.set_active_chain(LocalNet)

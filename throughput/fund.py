@@ -20,10 +20,8 @@ from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import hashlib
 
-# API_ENDPOINT = "http://localhost:4201"
-API_ENDPOINT = "https://george0007-api.dev.z7a.xyz"
-
-ZILLIQA_PATH = "/home/dranov/Developer/zilliqa-fork"
+API_ENDPOINT = "http://localhost:4201"
+ZILLIQA_PATH = "/home/pldi21/Zilliqa"
 CONFIG_FILE = "config.json"
 
 WAIT_TIME = 10

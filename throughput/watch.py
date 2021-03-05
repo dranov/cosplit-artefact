@@ -4,9 +4,7 @@ from pyzil.zilliqa import chain
 from pyzil.zilliqa.api import ZilliqaAPI, APIError
 from collections import Counter
 
-# API_ENDPOINT = "http://localhost:4201"
-API_ENDPOINT = "https://george0021-api.dev.z7a.xyz"
-
+API_ENDPOINT = "http://localhost:4201"
 
 LocalNet = chain.BlockChain(API_ENDPOINT, version=0, network_id=0)
 chain.set_active_chain(LocalNet)
