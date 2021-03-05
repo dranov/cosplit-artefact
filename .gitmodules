@@ -1,3 +1,6 @@
 [submodule "scilla"]
 	path = scilla
 	url = https://github.com/dranov/scilla.git
+[submodule "pyzil"]
+	path = pyzil
+	url = https://github.com/dranov/pyzil.git
