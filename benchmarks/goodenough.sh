@@ -1,5 +1,5 @@
 #!/bin/bash
-SCILLA_PATH=/home/pldi21/scilla
+SCILLA_PATH=/home/pldi21/cosplit-artefact/scilla
 CONTRACTS_PATH=/home/pldi21/cosplit-artefact/contracts
 
 # CSV header
