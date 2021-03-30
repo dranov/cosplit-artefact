@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/344343060.svg)](https://zenodo.org/badge/latestdoi/344343060)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.4646700.svg)](https://doi.org/10.5281/zenodo.4646700)
 
 # CoSplit artefact - PLDI21 paper 885
 
