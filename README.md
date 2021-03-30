@@ -47,6 +47,11 @@ Once you start the VM:
      (exported to `eth-erc20-split.csv`) by considering only `erc20_transfer`
      and `non_erc20_single_call` (and normalising such that their sum is 100%).
 
+  - **Note**: re-running the Jupyter notebook requires at least 16 GB of RAM,
+    and might, in some circumstances, require more than that. If the Python
+    kernel gets killed while the computation is ongoing, allocate more RAM to
+    the VM or machine you are running the computation in.
+
 6. Check that these figures match the ones in the paper.
 
 ## List of claims
