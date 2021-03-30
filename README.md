@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/344343060.svg)](https://zenodo.org/badge/latestdoi/344343060)
+
 # CoSplit artefact - PLDI21 paper 885
 
 This document last updated on 2021-03-30 at 06:40 GMT.
