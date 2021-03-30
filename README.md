@@ -1,6 +1,6 @@
 # CoSplit artefact - PLDI21 paper 885
 
-This document last updated on 2021-03-05 at 11:00 GMT.
+This document last updated on 2021-03-30 at 06:40 GMT.
 
 If you run into issues with the virtual machine, see the troubleshooting section
 at the end of this file.
@@ -47,10 +47,10 @@ Once you start the VM:
      (exported to `eth-erc20-split.csv`) by considering only `erc20_transfer`
      and `non_erc20_single_call` (and normalising such that their sum is 100%).
 
-  - **Note**: re-running the Jupyter notebook requires at least 16 GB of RAM,
-    and might, in some circumstances, require more than that. If the Python
-    kernel gets killed while the computation is ongoing, allocate more RAM to
-    the VM or machine you are running the computation in.
+   - **Note**: re-running the Jupyter notebook requires at least 16 GB of RAM,
+     and might, in some circumstances, require more than that. If the Python
+     kernel gets killed while the computation is ongoing, allocate more RAM to
+     the VM or machine you are running the computation in.
 
 6. Check that these figures match the ones in the paper.
 
